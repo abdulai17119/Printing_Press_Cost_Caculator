@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
 :root{
   --paper:#F2F4F3; --card:#FFFFFF; --ink:#16202B; --muted:#566372; --line:#D8DDE2; --line-soft:#E9ECEF;
@@ -203,10 +204,12 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
 
 .need{display:inline-block;background:var(--mag-soft);color:var(--magenta);border:1px solid var(--magenta);font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;white-space:nowrap}
 
+.need{display:inline-block;background:var(--mag-soft);color:var(--magenta);border:1px solid var(--magenta);font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;white-space:nowrap}
 </style>
 </head>
 <body>
-<div class="app"><nav class="nav" id="nav" aria-label="Main"></nav><main id="view"></main></div>
+<div id="authroot"></div>
+<div class="app" style="display:none"><nav class="nav" id="nav" aria-label="Main"></nav><main id="view"></main></div>
 <div id="modal"></div><div id="toast" role="status" aria-live="polite"></div>
 <script>
 /* ============================================================================
@@ -231,8 +234,8 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
   const MODES = { offset: 'Offset', digital: 'Digital', large_format: 'Large format', sticker: 'Sticker (roll or sheet + cutting)' };
   const MODE_MACHINES = { offset: ['offset'], digital: ['digital'], large_format: ['large_format', 'uv'], sticker: ['digital', 'large_format', 'uv'] };
   const FIN_METHODS = { per_piece: 'Per piece', per_sheet: 'Per sheet', per_meter: 'Per meter', per_sqm: 'Per m²', per_hour: 'Per hour', fixed: 'Fixed per job' };
-  const MAT_UNITS = { sheet: 'Per sheet', pack: 'Per pack of sheets', meter: 'Per meter', sqm: 'Per m²', roll: 'Per roll' };
-  const MAT_CATS = ['Paper', 'Card', 'Sticker', 'Vinyl', 'PVC', 'Banner', 'Fabric', 'Film', 'Packaging', 'Other'];
+  const MAT_UNITS = { sheet: 'Per sheet', pack: 'Per pack of sheets', meter: 'Per meter', sqm: 'Per m²', roll: 'Per roll', kg: 'Per kg', litre: 'Per litre', piece: 'Per piece' };
+  const MAT_CATS = ['Paper', 'Card', 'Sticker', 'Vinyl', 'PVC', 'Banner', 'Fabric', 'Film', 'Packaging', 'Ink', 'Hardware', 'Other'];
   const MACHINE_TYPES = { offset: 'Offset press', digital: 'Digital printer', large_format: 'Large-format printer', uv: 'UV printer', laminator: 'Laminator', guillotine: 'Guillotine', cutting_plotter: 'Cutting plotter', die_cutter: 'Die-cutting machine', laser: 'Laser machine' };
   const MACHINE_FIELDS = {
     offset: ['hourlyRate', 'setupRate', 'speed', 'colorUnits', 'costPerImpression'],
@@ -307,17 +310,18 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
 
   /* Turns "purchase cost + unit" into cost per sheet / per meter / per m². */
   function matDerived(mat) {
-    if (isBlank(mat.purchaseCost)) return { perSheet: null, perMeter: null, perSqm: null, mode: materialMode(mat) };   // no price yet: never pretend it is 0
+    if (isBlank(mat.purchaseCost)) return { perSheet: null, perMeter: null, perSqm: null, perUnit: null, mode: materialMode(mat) };   // no price yet: never pretend it is 0
     const sw = num(mat.sheetW), sh = num(mat.sheetH), rw = num(mat.rollWidth), rl = num(mat.rollLength);
     const pc = num(mat.purchaseCost), pack = Math.max(1, num(mat.packSize, 1));
     const sheetArea = (sw * sh) / 1e6, rwm = rw / 1000;
-    let perSheet = null, perMeter = null, perSqm = null;
+    let perSheet = null, perMeter = null, perSqm = null, perUnit = null;
     switch (mat.unit) {
       case 'sheet': perSheet = pc; break;
       case 'pack': perSheet = pc / pack; break;
       case 'meter': perMeter = pc; break;
       case 'sqm': perSqm = pc; break;
       case 'roll': if (rl > 0) perMeter = pc / rl; break;
+      case 'kg': case 'litre': case 'piece': perUnit = pc; break;   // bought and used by the same unit (ink, hardware) — no sheet/roll geometry involved
     }
     if (perSqm === null && perSheet !== null && sheetArea > 0) perSqm = perSheet / sheetArea;
     if (perSqm === null && perMeter !== null && rwm > 0) perSqm = perMeter / rwm;
@@ -325,7 +329,7 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
       if (perSheet === null && sheetArea > 0) perSheet = perSqm * sheetArea;
       if (perMeter === null && rwm > 0) perMeter = perSqm * rwm;
     }
-    return { perSheet, perMeter, perSqm, mode: materialMode(mat) };
+    return { perSheet, perMeter, perSqm, perUnit, mode: materialMode(mat) };
   }
 
   /* Unit used for "other material" lines: what one unit of quantity costs. */
@@ -335,6 +339,9 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
       case 'sheet': case 'pack': return { label: 'sheet', cost: d.perSheet };
       case 'meter': case 'roll': return { label: 'm', cost: d.perMeter };
       case 'sqm': return { label: 'm²', cost: d.perSqm };
+      case 'kg': return { label: 'kg', cost: d.perUnit };
+      case 'litre': return { label: 'L', cost: d.perUnit };
+      case 'piece': return { label: 'piece', cost: d.perUnit };
     }
     return { label: 'unit', cost: null };
   }
@@ -872,44 +879,36 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
 (function () {
   'use strict';
   const E = window.Engine, Seed = window.Seed, U = E.util;
-  const KEY = 'ppcc.v1';
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const uid = (p) => p + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const clone = U.clone, find = U.find, num = U.num, isBlank = U.isBlank;
   const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
   const setPath = (o, p, v) => { const ks = p.split('.'); let a = o; for (let i = 0; i < ks.length - 1; i++) a = a[ks[i]]; a[ks[ks.length - 1]] = v; };
-  const deepMerge = (base, over) => { Object.keys(over || {}).forEach((k) => { if (over[k] && typeof over[k] === 'object' && !Array.isArray(over[k]) && base[k] && typeof base[k] === 'object') deepMerge(base[k], over[k]); else base[k] = over[k]; }); return base; };
+  const uuid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16); });
 
-  /* ================= storage ================= */
-  let DB, storageOK = true;
-  function normalize(d) {
-    const s = Seed.build();
-    ['materials', 'machines', 'finishing', 'labor'].forEach((k) => { if (!Array.isArray(d[k])) d[k] = s[k]; });
-    d.calcs = Array.isArray(d.calcs) ? d.calcs : [];
-    d.seq = d.seq || 1;
-    d.settings = deepMerge(E.defaultSettings(), d.settings || {});
-    d.ui = d.ui || {};
-    return d;
-  }
-  function load() { try { const raw = localStorage.getItem(KEY); if (raw) return normalize(JSON.parse(raw)); } catch (e) { storageOK = false; } return null; }
-  function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(DB)); }
-    catch (e) { if (storageOK) { storageOK = false; toast('This browser is blocking storage — changes will be lost when you close the page.', 'warn'); } }
-  }
-  DB = load() || normalize(Seed.build());
-  let autoAdded = 0;
-  if (!DB.ui.inventoryAdded && !DB.ui.pinHash) {
-    Seed.inventoryMaterials().forEach((x) => { if (!DB.materials.some((m) => m.id === x.id || m.name.toLowerCase() === x.name.toLowerCase())) { DB.materials.push(x); autoAdded++; } });
-    DB.ui.inventoryAdded = true;
-  }
-  save();
+  /* ================= Supabase connection (public by design; RLS is what protects the data) ================= */
+  const SUPA_URL = 'https://rikkaenjbianbryqlfij.supabase.co';
+  const SUPA_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJpa2thZW5qYmlhbmJyeXFsZmlqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk5NjEzMTEsImV4cCI6MjEwNTUzNzMxMX0.12vPu6cTWjLipN7BQTbXsVvKYVuvKXt8IzyvWLSL-ZE';
+  const sb = window.supabase.createClient(SUPA_URL, SUPA_ANON_KEY);
+
+  /* ================= field mapping: snake_case DB rows <-> the app's camelCase shape ================= */
+  const MAPS = {
+    materials: [['id'], ['name'], ['category'], ['gsm_thickness', 'gsm'], ['sheet_width_mm', 'sheetW'], ['sheet_height_mm', 'sheetH'], ['roll_width_mm', 'rollWidth'], ['roll_length_m', 'rollLength'], ['unit'], ['pack_size', 'packSize'], ['purchase_cost', 'purchaseCost'], ['min_charge', 'minCharge'], ['supplier'], ['notes'], ['is_demo', 'demo']],
+    machines: [['id'], ['name'], ['machine_type', 'type'], ['hourly_rate', 'hourlyRate'], ['setup_rate', 'setupRate'], ['speed'], ['color_units', 'colorUnits'], ['click_color', 'clickColor'], ['click_bw', 'clickBW'], ['cost_per_impression', 'costPerImpression'], ['cost_per_sqm', 'costPerSqm'], ['notes'], ['is_demo', 'demo']],
+    finishing: [['id'], ['name'], ['pricing_method', 'method'], ['rate'], ['setup_cost', 'setupCost'], ['min_charge', 'minCharge'], ['notes'], ['is_demo', 'demo']],
+    labor: [['id'], ['category'], ['hourly_cost', 'hourlyCost'], ['notes'], ['is_demo', 'demo']]
+  };
+  const TABLE_NAME = { materials: 'materials', machines: 'machines', finishing: 'finishing_operations', labor: 'labor_rates' };
+  function fromRow(key, row) { const o = {}; MAPS[key].forEach(([db, js]) => { let v = row[db]; if (v === null) v = ''; o[js || db] = v; }); return o; }
+  function toRow(key, obj) { const o = {}; MAPS[key].forEach(([db, js]) => { let v = obj[js || db]; if (v === '' || v === undefined) v = null; o[db] = v; }); return o; }
+  const eqIgnoring = (a, b, ignore) => { const strip = (o) => { const c = clone(o); (ignore || []).forEach((k) => delete c[k]); return c; }; return JSON.stringify(strip(a)) === JSON.stringify(strip(b)); };
 
   /* ================= state ================= */
-  const state = { view: 'calc', job: null, editingId: null, savedTotal: null, cmp: '500, 1000, 2000, 5000', q: {}, unlocked: false, result: null };
-  const canEdit = () => !DB.ui.pinHash || state.unlocked;
-  const cur = () => DB.settings.currency || 'AED';
+  let DB = null, lastSynced = null, session = null, profile = null;
+  const state = { view: 'calc', job: null, editingId: null, editingUuid: null, savedTotal: null, cmp: '500, 1000, 2000, 5000', q: {}, result: null, needsOnly: false, auth: { mode: 'signin', busy: false, error: '', notice: '' } };
+  const canEdit = () => profile && profile.role === 'admin';
+  const cur = () => (DB && DB.settings.currency) || 'AED';
   const money = (x) => `${cur()} ${U.m(x)}`;
   const perPieceFmt = (x) => {
     let d = Math.max(2, Math.min(6, Number(DB.settings.unitDecimals) || 3));
@@ -919,21 +918,80 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
 
   /* ================= small UI helpers ================= */
   let toastTimer;
-  function toast(msg, kind) { const t = $('#toast'); t.textContent = msg; t.className = 'show' + (kind === 'warn' ? ' warn' : ''); clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = ''; }, 3800); }
+  function toast(msg, kind) { const t = $('#toast'); if (!t) return; t.textContent = msg; t.className = 'show' + (kind === 'warn' ? ' warn' : ''); clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = ''; }, 4200); }
   function openModal(html) { const m = $('#modal'); m.innerHTML = `<div class="dialog" role="dialog" aria-modal="true">${html}</div>`; m.classList.add('open'); const f = $('input,select,textarea,button', m); if (f) f.focus(); }
   function closeModal() { const m = $('#modal'); m.classList.remove('open'); m.innerHTML = ''; modalCtx = null; }
   let modalCtx = null;
-  async function saveFile(filename, data) {
-    let dl = null;
-    try { dl = window.claude && (await window.claude.use('downloads')); } catch (e) { dl = null; }
-    if (!dl) { openModal(`<h2>${esc(filename)}</h2><p class="hint">Downloads are not available in this view. Select all and copy the text below.</p><pre>${esc(data)}</pre><div class="foot"><button class="btn" data-act="close">Close</button></div>`); return; }
-    try { await dl.save({ filename, data }); toast('File ready.'); } catch (e) { if (!e || e.code !== 'declined') toast('Could not save the file here.', 'warn'); }
+  function saveTextFile(filename, data) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([data], { type: 'text/plain' })); a.download = filename; document.body.appendChild(a); a.click(); a.remove();
   }
-  async function sha(s) { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('ppcc:' + s)); return Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, '0')).join(''); }
   const demoTag = (r) => (r.demo ? '<span class="demo">DEMO</span>' : '');
   const matNeeds = (r) => { const sheetOk = num(r.sheetW) > 0 && num(r.sheetH) > 0, rollOk = num(r.rollWidth) > 0; return { price: isBlank(r.purchaseCost), size: (r.unit === 'sheet' || r.unit === 'pack') ? !sheetOk : !(rollOk || sheetOk) }; };
   const matReady = (r) => { const n = matNeeds(r); return !n.price && !n.size; };
   const opt = (v, label, sel) => `<option value="${esc(v)}"${String(sel) === String(v) ? ' selected' : ''}>${esc(label)}</option>`;
+
+  /* ================= Supabase: load everything after sign-in ================= */
+  function friendlyDbError(e) {
+    if (!e) return 'Unknown error.';
+    if (/permission denied|row-level security/i.test(e.message || '')) return "You don't have permission for that. Ask an admin.";
+    if (/JWT|network|fetch/i.test(e.message || '')) return 'Could not reach the database. Check your connection and try again.';
+    return e.message || String(e);
+  }
+  async function hydrate() {
+    const [mats, machs, fins, labs, settingsRow, wasteRows, calcRows, profRow] = await Promise.all([
+      sb.from('materials').select('*'), sb.from('machines').select('*'), sb.from('finishing_operations').select('*'), sb.from('labor_rates').select('*'),
+      sb.from('settings').select('*').eq('key', 'app').maybeSingle(), sb.from('waste_defaults').select('*'),
+      sb.from('calculations').select('id,display_id,created_at,job_name,product_type,quantity,total_cost,cost_per_piece,created_by,job_snapshot,full_result').order('created_at', { ascending: false }),
+      sb.from('profiles').select('*').eq('id', session.user.id).single()
+    ]);
+    const firstErr = [mats, machs, fins, labs, settingsRow, wasteRows, calcRows, profRow].find((r) => r.error);
+    if (firstErr) throw new Error(friendlyDbError(firstErr.error));
+    profile = { role: profRow.data.role, displayName: profRow.data.display_name };
+    const wasteDefaults = {}; wasteRows.data.forEach((w) => { wasteDefaults[w.method] = { pct: w.waste_pct, setup: w.setup_waste, min: w.min_waste }; });
+    const appSettings = (settingsRow.data && settingsRow.data.value) || E.defaultSettings();
+    DB = {
+      materials: mats.data.map((r) => fromRow('materials', r)).sort((a, b) => (a.demo ? 1 : 0) - (b.demo ? 1 : 0) || a.name.localeCompare(b.name)),
+      machines: machs.data.map((r) => fromRow('machines', r)).sort((a, b) => (a.demo ? 1 : 0) - (b.demo ? 1 : 0) || a.name.localeCompare(b.name)),
+      finishing: fins.data.map((r) => fromRow('finishing', r)).sort((a, b) => (a.demo ? 1 : 0) - (b.demo ? 1 : 0) || a.name.localeCompare(b.name)),
+      labor: labs.data.map((r) => fromRow('labor', r)).sort((a, b) => (a.demo ? 1 : 0) - (b.demo ? 1 : 0) || a.category.localeCompare(b.category)),
+      settings: Object.assign({}, appSettings, { waste: wasteDefaults }),
+      calcs: calcRows.data.map((c) => ({ id: c.display_id, _uuid: c.id, date: c.created_at, name: c.job_name, product: c.product_type, quantity: c.quantity, total: c.total_cost, perPiece: c.cost_per_piece, createdBy: c.created_by, job: c.job_snapshot, full: c.full_result }))
+    };
+    lastSynced = { materials: clone(DB.materials), machines: clone(DB.machines), finishing: clone(DB.finishing), labor: clone(DB.labor), app: clone(appSettings), waste: clone(wasteDefaults) };
+  }
+
+  /* ================= generic write-through sync for the four rate tables + settings ================= */
+  let syncChain = Promise.resolve();
+  function save() { syncChain = syncChain.then(doSync, doSync); }
+  async function doSync() {
+    try {
+      for (const key of Object.keys(MAPS)) await syncTable(key);
+      await syncSettingsAndWaste();
+    } catch (e) {
+      toast('Could not save that to the shared database: ' + friendlyDbError(e) + ' Reload to see what is actually saved.', 'warn');
+    }
+  }
+  async function syncTable(key) {
+    const table = TABLE_NAME[key], before = lastSynced[key], after = DB[key];
+    const beforeById = {}; before.forEach((r) => { beforeById[r.id] = r; });
+    const afterIds = new Set(after.map((r) => r.id));
+    const toDelete = before.filter((r) => !afterIds.has(r.id));
+    const toUpsert = after.filter((r) => !beforeById[r.id] || !eqIgnoring(r, beforeById[r.id], []));
+    for (const r of toDelete) { const { error } = await sb.from(table).delete().eq('id', r.id); if (error) throw error; }
+    if (toUpsert.length) { const { error } = await sb.from(table).upsert(toUpsert.map((r) => toRow(key, r))); if (error) throw error; }
+    lastSynced[key] = clone(after);
+  }
+  async function syncSettingsAndWaste() {
+    const app = { currency: DB.settings.currency, unitDecimals: DB.settings.unitDecimals, printing: DB.settings.printing, minimums: DB.settings.minimums };
+    if (!eqIgnoring(app, lastSynced.app, [])) { const { error } = await sb.from('settings').update({ value: app }).eq('key', 'app'); if (error) throw error; lastSynced.app = clone(app); }
+    for (const method of Object.keys(DB.settings.waste)) {
+      const w = DB.settings.waste[method];
+      if (!eqIgnoring(w, lastSynced.waste[method], [])) {
+        const { error } = await sb.from('waste_defaults').update({ waste_pct: w.pct, setup_waste: w.setup, min_waste: w.min }).eq('method', method);
+        if (error) throw error; lastSynced.waste[method] = clone(w);
+      }
+    }
+  }
 
   /* ================= job helpers ================= */
   const PRODUCT_MODE = { Sticker: 'sticker', Label: 'sticker', Banner: 'large_format', 'Roll-up': 'large_format', Poster: 'large_format', 'Large Format': 'large_format' };
@@ -953,7 +1011,20 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
     return j;
   }
   function freshJob() { return autoPick(E.newJob({ mode: 'digital', name: '' })); }
-  state.job = freshJob();
+  // Seed.testJobs() references the LOCAL demo ids from seed.js (fin_matte_lam, lab_press, ...).
+  // Your Supabase rows have their own generated ids, so any sub-row that doesn't match a real
+  // row in this database is cleared rather than left pointing at something that doesn't exist.
+  function sanitizeTestJob(j) {
+    j = autoPick(j);
+    let cleared = 0;
+    const clear = (row, key) => { if (row[key] && !find(DB[TABLE_KEY[key]], row[key])) { row[key] = ''; cleared++; } };
+    const TABLE_KEY = { finId: 'finishing', laborId: 'labor', materialId: 'materials' };
+    (j.finishing || []).forEach((r) => clear(r, 'finId'));
+    (j.labor || []).forEach((r) => clear(r, 'laborId'));
+    (j.addMaterials || []).forEach((r) => clear(r, 'materialId'));
+    ['lamFinId', 'cutFinId'].forEach((k) => { if (j[k] && !find(DB.finishing, j[k])) { j[k] = ''; cleared++; } });
+    return { job: j, cleared };
+  }
   const isBook = () => E.BOOK.includes(state.job.product);
 
   /* ================= form field builders (calculator) ================= */
@@ -1178,27 +1249,84 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
     const mini = $('#mini'); if (mini) mini.innerHTML = r.ok ? `<span>Total production cost</span><b>${money(r.total)}</b><span>Per piece <b style="font-size:16px">${perPieceFmt(r.perPiece)}</b></span>` : '<span>Total production cost</span><b>—</b><span>Fix the highlighted fields</span>';
   }
 
-  /* ---------- save / open ---------- */
-  const padId = (n) => 'PC-' + String(n).padStart(4, '0');
-  function snapshot(r) { return { subtotals: r.subtotals, lines: r.lines, requirement: r.summary.requirement, unitName: r.summary.unitName }; }
-  function saveCalc(asNew) {
+  /* ================= saving a calculation: the real relational write ================= */
+  function buildCalcPayload(job, r, DBnow) {
+    const u = E.UNIT_MM[job.unit] || 1, circle = job.mode === 'sticker' && job.shape === 'circle';
+    const wmm = (circle ? num(job.diameter) : num(job.w)) * u, hmm = (circle ? num(job.diameter) : num(job.h)) * u;
+    const owmm = num(job.ow) > 0 ? num(job.ow) * u : null, ohmm = num(job.oh) > 0 ? num(job.oh) * u : null;
+    const header = {
+      job_name: job.name || 'Untitled job', product_type: job.product, production_mode: job.mode, quantity: r.qty,
+      finished_width_mm: wmm, finished_height_mm: hmm, open_width_mm: owmm, open_height_mm: ohmm,
+      pages: r.summary.pages || null, sides: r.summary.sides, bleed_mm: num(job.bleed), notes: job.notes || null,
+      subtotal_material: r.subtotals.material, subtotal_printing: r.subtotals.printing, subtotal_finishing: r.subtotals.finishing,
+      subtotal_labor: r.subtotals.labor, subtotal_machine: r.subtotals.machine, subtotal_setup: r.subtotals.setup,
+      subtotal_waste: r.subtotals.waste, subtotal_other: r.subtotals.other, total_cost: r.total, cost_per_piece: r.perPiece,
+      full_result: r, job_snapshot: job
+    };
+    const mat = find(DBnow.materials, job.materialId), L = r.layout, q = r.summary.requirement;
+    const wasteLine = r.lines.waste.find((l) => l.label.startsWith(mat.name));
+    const materials = [{
+      material_id: mat.id, role: 'main', material_name: mat.name, layout_kind: L.kind,
+      press_width_mm: L.kind === 'sheet' ? L.sheetW : null, press_height_mm: L.kind === 'sheet' ? L.sheetH : null,
+      margin_mm: L.kind === 'sheet' ? L.margin : null, gripper_mm: L.kind === 'sheet' ? L.gripper : null, gap_mm: L.gutter,
+      orientation: L.orientation, pieces_across: L.across, pieces_down: L.kind === 'sheet' ? L.down : null,
+      pieces_per_sheet: L.kind === 'sheet' ? L.ups : null, rows_along_roll: L.kind === 'roll' ? L.rows : null,
+      good_units: q.good, waste_units: q.waste, total_units: q.total, unit_cost: q.perUnit,
+      line_cost: r.lines.material[0].amount + (wasteLine ? wasteLine.amount : 0)
+    }];
+    (job.addMaterials || []).forEach((row, i) => {
+      const mm = find(DBnow.materials, row.materialId); if (!mm) return;
+      const line = r.lines.material[i + 1];
+      materials.push({ material_id: mm.id, role: 'other', material_name: mm.name, layout_kind: null, orientation: null, good_units: num(row.qty), waste_units: 0, total_units: num(row.qty), unit_cost: E.matBasis(mm).cost || 0, line_cost: line ? line.amount : 0 });
+    });
+    const printing = { machine_id: find(DBnow.machines, job.machineId).id, machine_name: find(DBnow.machines, job.machineId).name, method: r.summary.costing,
+      colours: r.summary.printing.colours || null, plates: r.summary.printing.plates || null, plate_cost: r.summary.printing.plateCost || null, ink_rate: r.summary.printing.inkRate || null,
+      impressions: r.summary.printing.impressions || null, printed_sqm: r.summary.printing.printedSqm || null, click_rate: r.summary.printing.clickRate || null,
+      speed_used: null, run_hours: r.summary.machineHours.run, setup_hours: r.summary.machineHours.setup, hourly_rate_used: null, setup_rate_used: null,
+      plate_or_click_cost: null, ink_cost: null, machine_cost: r.subtotals.machine, setup_cost: r.subtotals.setup };
+    const finishing = r.stages.map((s, i) => ({ stage_no: i + 1, operation_name: s.name, pricing_method: s.method, quantity_basis: s.basis, multiplier: s.mult, rate_used: s.rate, min_charge_used: s.minCharge, setup_cost_used: s.setup, run_cost: s.run, setup_cost: s.setup }));
+    const labor = (job.labor || []).filter((row) => row.laborId).map((row) => { const lb = find(DBnow.labor, row.laborId); return lb ? { labor_rate_id: lb.id, category_name: lb.category, hours: num(row.hours), hourly_cost_used: num(lb.hourlyCost), line_cost: num(row.hours) * num(lb.hourlyCost) } : null; }).filter(Boolean);
+    const other = (job.other || []).filter((row) => row.desc || num(row.qty) || num(row.unitCost)).map((row) => ({ description: row.desc || 'Other cost', quantity: num(row.qty), unit_cost: num(row.unitCost), line_cost: num(row.qty) * num(row.unitCost) }));
+    return { header, materials, printing, finishing, labor, other };
+  }
+  async function writeCalcChildren(calcId, payload) {
+    if (payload.materials.length) { const { error } = await sb.from('calculation_materials').insert(payload.materials.map((m) => Object.assign({ calculation_id: calcId }, m))); if (error) throw error; }
+    { const { error } = await sb.from('calculation_printing').insert(Object.assign({ calculation_id: calcId }, payload.printing)); if (error) throw error; }
+    if (payload.finishing.length) { const { error } = await sb.from('calculation_finishing').insert(payload.finishing.map((f) => Object.assign({ calculation_id: calcId }, f))); if (error) throw error; }
+    if (payload.labor.length) { const { error } = await sb.from('calculation_labor').insert(payload.labor.map((l) => Object.assign({ calculation_id: calcId }, l))); if (error) throw error; }
+    if (payload.other.length) { const { error } = await sb.from('calculation_other_costs').insert(payload.other.map((o) => Object.assign({ calculation_id: calcId }, o))); if (error) throw error; }
+  }
+  async function saveCalc(asNew) {
     const r = state.result;
     if (!r || !r.ok) { toast('Fix the highlighted fields before saving.', 'warn'); return; }
     const j = clone(state.job); if (!j.name) j.name = 'Untitled job';
-    const base = { date: new Date().toISOString(), name: j.name, product: j.product, quantity: r.qty, total: r.total, perPiece: r.perPiece, job: j, snap: snapshot(r) };
-    if (!asNew && state.editingId) {
-      const i = DB.calcs.findIndex((c) => c.id === state.editingId);
-      if (i >= 0) { DB.calcs[i] = Object.assign({ id: state.editingId }, base); state.savedTotal = r.total; save(); toast(`${state.editingId} updated.`); render(); return; }
-    }
-    const id = padId(DB.seq++); DB.calcs.unshift(Object.assign({ id }, base)); state.editingId = id; state.savedTotal = r.total; save(); toast(`Saved as ${id}.`); render();
+    const payload = buildCalcPayload(j, r, DB);
+    try {
+      if (!asNew && state.editingId && state.editingUuid) {
+        const { error: uerr } = await sb.from('calculations').update(payload.header).eq('id', state.editingUuid);
+        if (uerr) throw uerr;
+        for (const t of ['calculation_materials', 'calculation_printing', 'calculation_finishing', 'calculation_labor', 'calculation_other_costs']) { const { error } = await sb.from(t).delete().eq('calculation_id', state.editingUuid); if (error) throw error; }
+        await writeCalcChildren(state.editingUuid, payload);
+        const i = DB.calcs.findIndex((c) => c.id === state.editingId);
+        if (i >= 0) DB.calcs[i] = Object.assign(DB.calcs[i], { name: j.name, product: j.product, quantity: r.qty, total: r.total, perPiece: r.perPiece, job: j, full: r });
+        state.savedTotal = r.total; toast(`${state.editingId} updated.`);
+      } else {
+        const { data, error } = await sb.from('calculations').insert(payload.header).select().single();
+        if (error) throw error;
+        await writeCalcChildren(data.id, payload);
+        DB.calcs.unshift({ id: data.display_id, _uuid: data.id, date: data.created_at, name: j.name, product: j.product, quantity: r.qty, total: r.total, perPiece: r.perPiece, createdBy: session.user.id, job: j, full: r });
+        state.editingId = data.display_id; state.editingUuid = data.id; state.savedTotal = r.total; toast(`Saved as ${data.display_id}.`);
+      }
+      render();
+    } catch (e) { toast('Could not save: ' + friendlyDbError(e), 'warn'); }
   }
 
   /* ================= generic databases ================= */
   const nf = (x, d) => (isBlank(x) ? '—' : U.f(num(x), d == null ? 2 : d));
   const ENT = {
     materials: {
-      title: 'Materials', one: 'material', prefix: 'mat', search: ['name', 'category', 'supplier', 'gsm'],
-      sub: 'Purchase price and unit are what you enter; cost per sheet, meter and m² are worked out for you.',
+      title: 'Materials', one: 'material', search: ['name', 'category', 'supplier', 'gsm'],
+      sub: 'Purchase price and unit are what you enter; cost per sheet, meter and m² are worked out for you. Shared with everyone signed in.',
       cols: [
         { h: 'Material', f: (r) => `<b>${esc(r.name)}</b>${demoTag(r)}` }, { h: 'Category', f: (r) => esc(r.category) }, { h: 'GSM / thickness', f: (r) => esc(r.gsm) },
         { h: 'Sheet (mm)', f: (r) => (num(r.sheetW) > 0 ? `${U.f(r.sheetW)} × ${U.f(r.sheetH)}` : (matNeeds(r).size && !(num(r.rollWidth) > 0) ? '<span class="need">Needs size</span>' : '—')) }, { h: 'Roll width (mm)', n: 1, f: (r) => nf(r.rollWidth, 0) },
@@ -1210,8 +1338,8 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
       ]
     },
     machines: {
-      title: 'Machines', one: 'machine', prefix: 'mach', search: ['name', 'type', 'notes'],
-      sub: 'Only the fields that matter for each machine type are shown when you edit it.',
+      title: 'Machines', one: 'machine', search: ['name', 'type', 'notes'],
+      sub: 'Only the fields that matter for each machine type are shown when you edit it. Shared with everyone signed in.',
       cols: [
         { h: 'Machine', f: (r) => `<b>${esc(r.name)}</b>${demoTag(r)}` }, { h: 'Type', f: (r) => esc(E.MACHINE_TYPES[r.type] || r.type) },
         { h: 'Hourly rate', n: 1, f: (r) => nf(r.hourlyRate) }, { h: 'Setup rate', n: 1, f: (r) => (isBlank(r.setupRate) ? '<small>= hourly</small>' : nf(r.setupRate)) },
@@ -1222,16 +1350,16 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
       ]
     },
     finishing: {
-      title: 'Finishing', one: 'operation', prefix: 'fin', search: ['name', 'method', 'notes'],
-      sub: 'Every operation has a pricing method, an optional fixed setup cost and an optional minimum charge.',
+      title: 'Finishing', one: 'operation', search: ['name', 'method', 'notes'],
+      sub: 'Every operation has a pricing method, an optional fixed setup cost and an optional minimum charge. Shared with everyone signed in.',
       cols: [
         { h: 'Operation', f: (r) => `<b>${esc(r.name)}</b>${demoTag(r)}` }, { h: 'Pricing method', f: (r) => esc(E.FIN_METHODS[r.method] || r.method) },
         { h: 'Rate', n: 1, f: (r) => nf(r.rate, 4) }, { h: 'Fixed setup cost', n: 1, f: (r) => nf(r.setupCost) }, { h: 'Min. charge', n: 1, f: (r) => nf(r.minCharge) }, { h: 'Notes', f: (r) => (r.demo ? '' : esc(r.notes)) }
       ]
     },
     labor: {
-      title: 'Labor', one: 'labor category', prefix: 'lab', search: ['category', 'notes'],
-      sub: 'Hourly cost of each kind of work. Add hours per job on the calculation screen.',
+      title: 'Labor', one: 'labor category', search: ['category', 'notes'],
+      sub: 'Hourly cost of each kind of work. Shared with everyone signed in.',
       cols: [{ h: 'Labor category', f: (r) => `<b>${esc(r.category)}</b>${demoTag(r)}` }, { h: 'Hourly cost', n: 1, f: (r) => nf(r.hourlyCost) }, { h: 'Notes', f: (r) => (r.demo ? '' : esc(r.notes)) }]
     }
   };
@@ -1282,7 +1410,7 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
     return errs;
   }
   function blankRecord(key) {
-    const id = uid(ENT[key].prefix);
+    const id = uuid();
     if (key === 'materials') return { id, name: '', category: 'Paper', gsm: '', sheetW: '', sheetH: '', rollWidth: '', rollLength: '', unit: 'sheet', packSize: '', purchaseCost: '', minCharge: '', supplier: '', notes: '' };
     if (key === 'machines') return { id, name: '', type: 'digital', hourlyRate: '', setupRate: '', speed: '', costPerSqm: '', costPerImpression: '', notes: '' };
     if (key === 'finishing') return { id, name: '', method: 'per_piece', rate: '', setupCost: '', minCharge: '', notes: '' };
@@ -1305,21 +1433,21 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
     return html + derived;
   }
   function openForm(key, id) {
-    if (!canEdit()) { toast('Rates are locked. Unlock them first.', 'warn'); return; }
+    if (!canEdit()) { toast('Only an admin can edit rates.', 'warn'); return; }
     const rec = id ? clone(find(DB[key], id)) : blankRecord(key);
     if (!rec) return;
     modalCtx = { kind: 'form', key, draft: rec, isNew: !id };
     openModal(`<h2>${id ? 'Edit' : 'Add'} ${ENT[key].one}</h2><div class="grid g2" id="formbody">${formBody(key, rec)}</div><div class="foot"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="save-ent">Save ${ENT[key].one}</button></div>`);
   }
   function saveEnt() {
-    const { key, draft, isNew } = modalCtx;
+    const { key, draft } = modalCtx;
     const errs = validateDraft(key, draft);
     if (Object.keys(errs).length) { $('#formbody').innerHTML = formBody(key, draft, errs); toast('Please fix the highlighted fields.', 'warn'); return; }
     const out = clone(draft);
     fieldDefs(key, out).forEach((f) => { if (f.type === 'number') out[f.k] = isBlank(out[f.k]) ? '' : Number(out[f.k]); });
     delete out.demo;
     const i = DB[key].findIndex((x) => x.id === out.id);
-    if (i >= 0) { if (DB[key][i].demo && JSON.stringify(Object.assign({}, DB[key][i], { demo: undefined })) === JSON.stringify(Object.assign({}, out, { demo: undefined }))) out.demo = true; DB[key][i] = out; } else DB[key].push(out);
+    if (i >= 0) DB[key][i] = out; else DB[key].push(out);
     save(); closeModal(); toast(`${ENT[key].one[0].toUpperCase() + ENT[key].one.slice(1)} saved.`); render();
   }
   function crudRows(key) {
@@ -1328,18 +1456,16 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
     const n = cfg.cols.length + 1;
     return { count: `${rows.length} of ${DB[key].length}`, html: rows.map((r) => `<tr>${cfg.cols.map((c) => `<td class="${c.n ? 'n' : ''}">${c.f(r)}</td>`).join('')}<td class="rowact">${lock ? '' : `<button class="lnk" data-act="edit-ent" data-ent="${key}" data-id="${esc(r.id)}">Edit</button><button class="lnk danger" data-act="del-ent" data-ent="${key}" data-id="${esc(r.id)}">Delete</button>`}</td></tr>`).join('') || `<tr><td class="empty" colspan="${n}">${DB[key].length ? 'Nothing matches your search.' : `No ${cfg.title.toLowerCase()} yet. Add your first ${cfg.one}.`}</td></tr>` };
   }
-  const lockBanner = () => (DB.ui.pinHash && !state.unlocked ? `<div class="notice info">Rates are locked. You can calculate and view everything, but editing needs the PIN. <button class="btn sm" data-act="unlock">Unlock</button></div>` : '');
+  const lockBanner = () => (canEdit() ? '' : `<div class="notice info">You're signed in as staff, so you can calculate and view everything, but only an admin can edit rates.</div>`);
   const demoBanner = (key) => (DB[key].some((r) => r.demo) ? '<div class="notice">Rows marked <span class="demo">DEMO</span> are placeholder data to show how the system works. They are not real prices — edit them or remove them in Settings → Data.</div>' : '');
   function viewCrud(key) {
     const cfg = ENT[key], rs = crudRows(key);
-    let invBtn = '', needNote = '';
+    let needNote = '';
     if (key === 'materials') {
-      const pending = Seed.inventoryMaterials().filter((x) => !DB.materials.some((m) => m.id === x.id || m.name.toLowerCase() === x.name.toLowerCase())).length;
-      if (pending && canEdit()) invBtn = `<button class="btn" data-act="add-inventory">Add ${pending} name${pending > 1 ? 's' : ''} from my inventory list</button>`;
       const nc = DB.materials.filter((m) => !matReady(m)).length;
       if (nc) needNote = `<div class="notice info"><b>${nc} material${nc > 1 ? 's' : ''} still need${nc > 1 ? '' : 's'} a price or sheet size.</b> They can't be used in a calculation until they have both, so no cost is ever guessed. <span style="display:inline-flex;gap:6px;flex-wrap:wrap;margin-left:6px"><button class="btn sm" data-act="goto-matcosts">Type prices &amp; sizes in a table</button><button class="btn sm" data-act="toggle-needs">${state.needsOnly ? 'Show all' : 'Show only these'}</button></span></div>`;
     }
-    return head(cfg.title, cfg.sub, (invBtn) + (canEdit() ? `<button class="btn primary" data-act="add-ent" data-ent="${key}">Add ${cfg.one}</button>` : ''))
+    return head(cfg.title, cfg.sub, canEdit() ? `<button class="btn primary" data-act="add-ent" data-ent="${key}">Add ${cfg.one}</button>` : '')
       + lockBanner() + needNote + demoBanner(key)
       + `<div class="card"><div class="toolbar"><input type="search" class="search" data-q="${key}" placeholder="Search ${cfg.title.toLowerCase()}…" value="${esc(state.q[key] || '')}" aria-label="Search"><span class="count" id="crudcount">${rs.count}</span></div><div class="tscroll"><table class="tbl"><thead><tr>${cfg.cols.map((c) => `<th class="${c.n ? 'n' : ''}">${c.h}</th>`).join('')}<th></th></tr></thead><tbody id="crudbody">${rs.html}</tbody></table></div></div>`;
   }
@@ -1348,20 +1474,19 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
   function savedRows() {
     const q = (state.q.saved || '').toLowerCase();
     const rows = DB.calcs.filter((c) => !q || [c.id, c.name, c.product].some((x) => String(x || '').toLowerCase().includes(q)));
-    return { count: `${rows.length} of ${DB.calcs.length}`, html: rows.map((c) => `<tr><td><b>${esc(c.id)}</b></td><td>${new Date(c.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td><td>${esc(c.name)}</td><td>${esc(c.product)}</td><td class="n">${U.f(c.quantity)}</td><td class="n">${money(c.total)}</td><td class="n">${perPieceFmt(c.perPiece)}</td><td class="rowact"><button class="lnk" data-act="open-calc" data-id="${c.id}">Open</button><button class="lnk" data-act="edit-calc" data-id="${c.id}">Edit</button><button class="lnk" data-act="dup-calc" data-id="${c.id}">Duplicate</button><button class="lnk danger" data-act="del-calc" data-id="${c.id}">Delete</button></td></tr>`).join('') || `<tr><td class="empty" colspan="8">${DB.calcs.length ? 'Nothing matches your search.' : 'No saved calculations yet. Calculate a job and press “Save calculation”.'}</td></tr>` };
+    return { count: `${rows.length} of ${DB.calcs.length}`, html: rows.map((c) => `<tr><td><b>${esc(c.id)}</b></td><td>${new Date(c.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td><td>${esc(c.name)}</td><td>${esc(c.product)}</td><td class="n">${U.f(c.quantity)}</td><td class="n">${money(c.total)}</td><td class="n">${perPieceFmt(c.perPiece)}</td><td class="rowact"><button class="lnk" data-act="open-calc" data-id="${c.id}">Open</button><button class="lnk" data-act="edit-calc" data-id="${c.id}">Edit</button><button class="lnk" data-act="dup-calc" data-id="${c.id}">Duplicate</button>${(canEdit() || c.createdBy === session.user.id) ? `<button class="lnk danger" data-act="del-calc" data-id="${c.id}">Delete</button>` : ''}</td></tr>`).join('') || `<tr><td class="empty" colspan="8">${DB.calcs.length ? 'Nothing matches your search.' : 'No saved calculations yet. Calculate a job and press “Save calculation”.'}</td></tr>` };
   }
   function viewSaved() {
     const rs = savedRows();
-    return head('Saved calculations', 'Costing history only. Each entry keeps the job specification and the cost it produced on the day.', DB.calcs.length ? '<button class="btn" data-act="export-csv">Export CSV</button>' : '')
+    return head('Saved calculations', 'Costing history shared by everyone signed in. Each entry keeps the job specification and the cost it produced on the day.', DB.calcs.length ? '<button class="btn" data-act="export-csv">Export CSV</button>' : '')
       + `<div class="card"><div class="toolbar"><input type="search" class="search" data-q="saved" placeholder="Search by ID, job name or product…" value="${esc(state.q.saved || '')}" aria-label="Search"><span class="count" id="crudcount">${rs.count}</span></div><div class="tscroll"><table class="tbl"><thead><tr><th>ID</th><th>Date</th><th>Job name</th><th>Product</th><th class="n">Quantity</th><th class="n">Total cost</th><th class="n">Cost / piece</th><th></th></tr></thead><tbody id="crudbody">${rs.html}</tbody></table></div></div>`;
   }
   function openCalc(id) {
     const c = find(DB.calcs, id); if (!c) return;
-    const s = c.snap || {};
-    const sub = s.subtotals ? E.CATEGORIES.map((k) => `<tr><td>${CAT_NAMES[k]}</td><td class="n">${money(s.subtotals[k] || 0)}</td></tr>`).join('') : '';
-    openModal(`<h2>${esc(c.id)} · ${esc(c.name)}</h2><dl class="kv" style="margin-bottom:14px"><dt>Date</dt><dd>${new Date(c.date).toLocaleString('en-GB')}</dd><dt>Product</dt><dd>${esc(c.product)}</dd><dt>Quantity</dt><dd>${U.f(c.quantity)}</dd><dt>Total production cost</dt><dd><b>${money(c.total)}</b></dd><dt>Cost per piece</dt><dd><b>${perPieceFmt(c.perPiece)}</b></dd>${c.job && c.job.notes ? `<dt>Notes</dt><dd>${esc(c.job.notes)}</dd>` : ''}</dl>
-      <table class="tbl tight"><thead><tr><th>Cost group (as saved)</th><th class="n">Amount</th></tr></thead><tbody>${sub}</tbody></table>
-      <p class="hint">This is the snapshot from the day it was saved. “Edit” reopens the job with today's rates.</p><div class="foot"><button class="btn" data-act="close">Close</button><button class="btn primary" data-act="edit-calc" data-id="${esc(c.id)}">Edit</button></div>`);
+    const r = c.full;
+    const body = r ? `<div class="figure">${r.layout.kind === 'sheet' ? sheetSVG(r.layout) : rollSVG(r.layout)}${requirementHTML(r)}</div>${breakdownHTML(r)}${formulaHTML(r)}` : '<p class="hint">No detailed breakdown was saved for this one.</p>';
+    openModal(`<h2>${esc(c.id)} · ${esc(c.name)}</h2><dl class="kv" style="margin-bottom:14px"><dt>Date</dt><dd>${new Date(c.date).toLocaleString('en-GB')}</dd><dt>Product</dt><dd>${esc(c.product)}</dd><dt>Quantity</dt><dd>${U.f(c.quantity)}</dd><dt>Total production cost</dt><dd><b>${money(c.total)}</b></dd><dt>Cost per piece</dt><dd><b>${perPieceFmt(c.perPiece)}</b></dd>${c.job && c.job.notes ? `<dt>Notes</dt><dd>${esc(c.job.notes)}</dd>` : ''}</dl>${body}
+      <div class="foot"><button class="btn" data-act="close">Close</button><button class="btn primary" data-act="edit-calc" data-id="${esc(c.id)}">Edit</button></div>`);
   }
 
   /* ================= settings ================= */
@@ -1377,9 +1502,10 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
     const wr = Object.keys(E.MODES).map((k) => `<tr><td>${E.MODES[k]}</td><td class="n"><input type="number" step="any" data-s="waste.${k}.pct" value="${esc(DB.settings.waste[k].pct)}"${dis}></td><td class="n"><input type="number" step="any" data-s="waste.${k}.setup" value="${esc(DB.settings.waste[k].setup)}"${dis}></td><td class="n"><input type="number" step="any" data-s="waste.${k}.min" value="${esc(DB.settings.waste[k].min)}"${dis}></td></tr>`).join('');
     const sh = Object.keys(E.MODES).map((k) => `<label class="f"><span>${E.MODES[k].split(' (')[0]}</span><input data-s="printing.setupHours.${k}" type="number" step="any" value="${esc(DB.settings.printing.setupHours[k])}"${dis}></label>`).join('');
     const demoCount = ['materials', 'machines', 'finishing', 'labor'].reduce((a, k) => a + DB[k].filter((r) => r.demo).length, 0);
-    return head('Settings', 'Everything the calculator uses lives here or in the rate databases. Nothing is hard-coded.')
+    return head('Settings', 'Everything the calculator uses lives here or in the rate databases, shared by your whole team. Nothing is hard-coded.')
       + lockBanner()
-      + `<section class="card"><h3>Currency &amp; display</h3><div class="grid"><label class="f"><span>Currency</span><input data-s="currency" type="text" maxlength="6" value="${esc(DB.settings.currency)}"${dis}></label>
+      + `<section class="card"><h3>Account</h3><dl class="kv"><dt>Signed in as</dt><dd>${esc(profile.displayName)} (${esc(session.user.email)})</dd><dt>Role</dt><dd>${profile.role === 'admin' ? 'Admin — can edit rates' : 'Staff — can calculate and save, not edit rates'}</dd></dl><div class="actions"><button class="btn" data-act="sign-out">Sign out</button></div></section>
+        <section class="card"><h3>Currency &amp; display</h3><div class="grid"><label class="f"><span>Currency</span><input data-s="currency" type="text" maxlength="6" value="${esc(DB.settings.currency)}"${dis}></label>
           <label class="f"><span>Decimals for cost per piece</span><select data-s="unitDecimals"${dis}>${[2, 3, 4, 5].map((d) => opt(d, d, DB.settings.unitDecimals)).join('')}</select></label></div><p class="hint">No VAT, profit or selling price exists anywhere in this application.</p></section>
         <section class="card"><h3>Waste by production method <small>editable defaults</small></h3><div class="tscroll"><table class="tbl tight"><thead><tr><th>Method</th><th class="n">Waste %</th><th class="n">Fixed setup waste</th><th class="n">Minimum waste</th></tr></thead><tbody>${wr}</tbody></table></div>
           <p class="hint">Waste is counted in what physically gets spoiled: sheets for sheet jobs, meters for roll jobs. Percentage waste is rounded up to whole sheets; the minimum applies to the percentage part. Offset setup waste is per design (plate set).</p></section>
@@ -1390,44 +1516,107 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
         <section class="card"><h3>Labor rates</h3>${quickTable('labor', [['hourlyCost', 'Hourly cost']])}</section>
         <section class="card" id="matcosts"><h3>Material costs</h3>${quickTable('materials', [['sheetW', 'Sheet W (mm)'], ['sheetH', 'Sheet H (mm)'], ['rollWidth', 'Roll W (mm)'], ['purchaseCost', 'Purchase cost'], ['minCharge', 'Min. charge']])}<p class="hint">Purchase cost is per the material's unit (per sheet unless you changed it in Materials → Edit — e.g. per pack, per meter, per m²). Sheets need width and height; rolls need roll width.</p></section>
         <section class="card"><h3>Finishing rates</h3>${quickTable('finishing', [['rate', 'Rate'], ['setupCost', 'Setup cost'], ['minCharge', 'Min. charge']])}</section>
-        <section class="card"><h3>Rates lock</h3><p class="hint" style="margin-top:0">${DB.ui.pinHash ? 'A PIN is set. Editing rates, materials, machines, finishing and labor needs it.' : 'Set a PIN so only authorised people can change rates.'} This is a convenience lock stored in this browser — it stops accidental edits, but it is not real security. For real access control the data has to live on a server with logins.</p>
-          <div class="actions">${DB.ui.pinHash ? (canEdit() ? '<button class="btn" data-act="remove-pin">Remove PIN</button><button class="btn" data-act="lock">Lock now</button>' : '<button class="btn primary" data-act="unlock">Unlock</button>') : '<button class="btn primary" data-act="set-pin">Set a PIN</button>'}</div></section>
-        <section class="card"><h3>Data &amp; backup</h3><p class="hint" style="margin-top:0">Everything is stored in this browser only. Export a backup before clearing browser data or moving to another computer.</p>
-          <div class="actions"><button class="btn" data-act="export-json">Export backup</button><button class="btn" data-act="import-json"${dis}>Import backup</button><button class="btn" data-act="restore-demo"${dis}>Restore demo data</button><button class="btn danger" data-act="clear-demo"${dis}>Remove all demo data (${demoCount})</button></div></section>`;
+        ${canEdit() ? teamCard() : ''}
+        <section class="card"><h3>Data</h3><p class="hint" style="margin-top:0">Materials, machines, finishing and labor are shared by everyone signed in — an edit here is visible to your whole team immediately.</p>
+          <div class="actions"><button class="btn" data-act="export-json">Export a read-only backup</button>${canEdit() ? `<button class="btn danger" data-act="clear-demo">Remove all demo data (${demoCount})</button>` : ''}</div></section>`;
+  }
+  function teamCard() {
+    return `<section class="card"><h3>Team</h3><p class="hint" style="margin-top:0">Anyone can sign up; the first person to sign up became admin. As an admin you can promote or demote anyone else here.</p><div id="teamlist" class="tscroll"><p class="hint">Loading…</p></div></section>`;
+  }
+  async function loadTeam() {
+    const box = $('#teamlist'); if (!box) return;
+    const { data, error } = await sb.from('profiles').select('*').order('display_name');
+    if (error) { box.innerHTML = `<p class="err">${esc(friendlyDbError(error))}</p>`; return; }
+    box.innerHTML = `<table class="tbl tight"><thead><tr><th>Name</th><th>Role</th><th></th></tr></thead><tbody>${data.map((p) => `<tr><td>${esc(p.display_name)}${p.id === session.user.id ? ' (you)' : ''}</td><td>${esc(p.role)}</td><td>${p.id === session.user.id ? '' : `<button class="lnk" data-act="toggle-role" data-id="${p.id}" data-role="${p.role === 'admin' ? 'staff' : 'admin'}">Make ${p.role === 'admin' ? 'staff' : 'admin'}</button>`}</td></tr>`).join('')}</tbody></table>`;
   }
 
   /* ================= test jobs ================= */
   function viewTests() {
     const tdb = Seed.build(), tj = Seed.testJobs(), res = tj.map((j) => E.calculate(j, tdb));
     const rowFor = (j, r) => { const s = r.summary, q = s.requirement, dp = s.kind === 'sheet' ? 0 : 3; return `<tr><td>${esc(j.name)}</td><td>${U.f(q.good, dp)} + ${U.f(q.waste, dp)} = ${U.f(q.total, dp)} ${s.kind === 'sheet' ? 'sheets' : 'm'}</td><td>${s.printing.plates != null ? `${U.f(s.printing.impressions)} impr., ${s.printing.plates} plates` : s.printing.clicks != null ? `${U.f(s.printing.clicks)} clicks` : `${U.f(s.printing.printedSqm, 1)} m²`}</td><td>${r.stages.map((x) => esc(x.name)).join(', ') || '—'}</td><td class="n">${U.f(s.labor.hours, 2)} h · ${U.m(s.labor.cost)}</td><td class="n">${U.m(s.machineCost)}</td><td class="n"><b>${U.m(r.total)}</b></td><td class="n"><b>${r.perPiece.toFixed(4)}</b></td></tr>`; };
-    return head('Test jobs', 'The five reference jobs run through the same engine.')
-      + '<div class="notice">These tests use the built-in <b>demo</b> rates, not your database, so results are repeatable. The numbers are placeholders, useful for checking the maths — not real prices.</div>'
-      + `<div class="card"><div class="tscroll"><table class="tbl"><thead><tr><th>Job</th><th>Material (good + waste)</th><th>Printing requirement</th><th>Finishing</th><th class="n">Labor</th><th class="n">Machine + setup</th><th class="n">Total (${esc(cur())})</th><th class="n">Per piece</th></tr></thead><tbody>${tj.map((j, i) => rowFor(j, res[i])).join('')}</tbody></table></div></div>`
-      + tj.map((j, i) => { const r = res[i]; return `<details class="card"><summary style="cursor:pointer;font-weight:650">${esc(j.name)} — ${money(r.total)} · ${perPieceFmt(r.perPiece)} per piece</summary><div style="margin-top:12px" class="figure">${r.layout.kind === 'sheet' ? sheetSVG(r.layout) : rollSVG(r.layout)}${requirementHTML(r)}</div><div style="margin-top:14px">${breakdownHTML(r)}</div><div style="margin-top:12px">${formulaHTML(r)}</div><div class="actions" style="margin-top:12px"><button class="btn sm" data-act="load-test" data-i="${i}">Load into calculator</button></div></details>`; }).join('');
+    return head('Test jobs', 'The five reference jobs run through the same engine, using the built-in demo rates (not your database) so the numbers are repeatable.')
+      + '<div class="notice">These use <b>demo</b> rates. The numbers are placeholders, useful for checking the maths — not real prices.</div>'
+      + `<div class="card"><div class="tscroll"><table class="tbl"><thead><tr><th>Job</th><th>Material (good + waste)</th><th>Printing requirement</th><th>Finishing</th><th class="n">Labor</th><th class="n">Machine + setup</th><th class="n">Total (AED)</th><th class="n">Per piece</th></tr></thead><tbody>${tj.map((j, i) => rowFor(j, res[i])).join('')}</tbody></table></div></div>`
+      + tj.map((j, i) => { const r = res[i]; return `<details class="card"><summary style="cursor:pointer;font-weight:650">${esc(j.name)} — AED ${U.m(r.total)} · ${r.perPiece.toFixed(4)} per piece</summary><div style="margin-top:12px" class="figure">${r.layout.kind === 'sheet' ? sheetSVG(r.layout) : rollSVG(r.layout)}${requirementHTML(r)}</div><div style="margin-top:14px">${breakdownHTML(r)}</div><div style="margin-top:12px">${formulaHTML(r)}</div><div class="actions" style="margin-top:12px"><button class="btn sm" data-act="load-test" data-i="${i}">Load into calculator</button></div></details>`; }).join('');
+  }
+
+  /* ================= auth screen ================= */
+  function viewAuth() {
+    const a = state.auth, signin = a.mode === 'signin';
+    return `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px"><div class="card" style="max-width:380px;width:100%">
+      <h1 style="font-size:20px;margin-bottom:4px">Production cost calculator</h1><p class="sub" style="margin-bottom:18px">${signin ? 'Sign in to your shop account.' : 'Create the first account, or join a shop that already uses this.'}</p>
+      ${a.error ? `<div class="notice bad">${esc(a.error)}</div>` : ''}${a.notice ? `<div class="notice info">${esc(a.notice)}</div>` : ''}
+      <form id="authform" class="grid" style="grid-template-columns:1fr">
+        ${signin ? '' : '<label class="f"><span>Your name</span><input name="displayName" required autocomplete="name"></label>'}
+        <label class="f"><span>Email</span><input name="email" type="email" required autocomplete="email"></label>
+        <label class="f"><span>Password</span><input name="password" type="password" required minlength="6" autocomplete="${signin ? 'current-password' : 'new-password'}"></label>
+        <button class="btn primary" type="submit" ${a.busy ? 'disabled' : ''}>${a.busy ? 'Please wait…' : signin ? 'Sign in' : 'Create account'}</button>
+      </form>
+      <p class="hint" style="margin-top:14px">${signin ? "New here?" : 'Already have an account?'} <button class="lnk" data-act="toggle-auth">${signin ? 'Create an account' : 'Sign in'}</button></p>
+    </div></div>`;
   }
 
   /* ================= render ================= */
   const VIEWS = { calc: viewCalc, saved: viewSaved, materials: () => viewCrud('materials'), machines: () => viewCrud('machines'), finishing: () => viewCrud('finishing'), labor: () => viewCrud('labor'), settings: viewSettings, tests: viewTests };
   const NAV = [['calc', 'New calculation'], ['saved', 'Saved calculations'], ['materials', 'Materials'], ['machines', 'Machines'], ['finishing', 'Finishing'], ['labor', 'Labor'], ['settings', 'Settings'], ['tests', 'Test jobs']];
   function renderNav() {
-    $('#nav').innerHTML = `<div class="brand"><b>Production cost calculator</b><span>What the job costs us to make</span></div>` + NAV.map((n, i) => `${i === 2 || i === 6 ? '<div class="sep"></div>' : ''}<button data-view="${n[0]}"${state.view === n[0] ? ' aria-current="page"' : ''}>${n[1]}${n[0] === 'saved' ? `<span class="cnt">${DB.calcs.length}</span>` : ''}</button>`).join('');
+    $('#nav').innerHTML = `<div class="brand"><b>Production cost calculator</b><span>${esc(profile.displayName)} · ${profile.role} · <button class="lnk" data-act="sign-out" style="padding:0;font-size:inherit">Sign out</button></span></div>` + NAV.map((n, i) => `${i === 2 || i === 6 ? '<div class="sep"></div>' : ''}<button data-view="${n[0]}"${state.view === n[0] ? ' aria-current="page"' : ''}>${n[1]}${n[0] === 'saved' ? `<span class="cnt">${DB.calcs.length}</span>` : ''}</button>`).join('');
   }
   function render() {
+    if (!session) { document.querySelector('.app').style.display = 'none'; $('#authroot').innerHTML = viewAuth(); $('#authroot').style.display = ''; return; }
+    document.querySelector('.app').style.display = ''; $('#authroot').style.display = 'none'; $('#authroot').innerHTML = '';
     renderNav();
     $('#view').innerHTML = VIEWS[state.view]();
     if (state.view === 'calc') recalc();
+    if (state.view === 'settings' && canEdit()) loadTeam();
   }
   function go(v) { state.view = v; render(); window.scrollTo(0, 0); }
 
+  /* ================= auth actions ================= */
+  async function doAuth(mode, email, password, displayName) {
+    state.auth.busy = true; state.auth.error = ''; state.auth.notice = ''; render();
+    try {
+      if (mode === 'signup') {
+        const { data, error } = await sb.auth.signUp({ email, password, options: { data: { display_name: displayName } } });
+        if (error) throw error;
+        if (!data.session) { state.auth.busy = false; state.auth.notice = 'Check your email for a confirmation link, then sign in.'; state.auth.mode = 'signin'; render(); return; }
+      } else {
+        const { error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      }
+      // onAuthStateChange (registered below) takes it from here: hydrate() + render()
+    } catch (e) {
+      state.auth.busy = false; state.auth.error = e.message || 'Something went wrong.'; render();
+    }
+  }
+  sb.auth.onAuthStateChange((event, sess) => {
+    if (sess && (!session || session.user.id !== sess.user.id)) {
+      session = sess;
+      hydrate().then(() => { state.auth.busy = false; state.job = freshJob(); render(); })
+        .catch((e) => { toast('Could not load the shared database: ' + friendlyDbError(e), 'warn'); });
+    } else if (!sess && session) {
+      session = null; profile = null; DB = null; render();
+    }
+  });
+
   /* ================= events ================= */
+  document.addEventListener('submit', (e) => {
+    if (e.target.id === 'authform') {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      doAuth(state.auth.mode, f.get('email').trim(), f.get('password'), (f.get('displayName') || '').trim());
+    }
+  });
   document.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-act="toggle-auth"]')) { state.auth.mode = state.auth.mode === 'signin' ? 'signup' : 'signin'; state.auth.error = ''; state.auth.notice = ''; render(); return; }
     const nav = e.target.closest('[data-view]'); if (nav) { go(nav.dataset.view); return; }
     if (e.target.id === 'modal') { closeModal(); return; }
     const t = e.target.closest('[data-act]'); if (!t) return;
     const a = t.dataset.act, d = t.dataset;
     switch (a) {
       case 'close': closeModal(); break;
-      case 'new-job': state.job = freshJob(); state.editingId = null; state.savedTotal = null; render(); break;
+      case 'sign-out': await sb.auth.signOut(); break;
+      case 'new-job': state.job = freshJob(); state.editingId = null; state.editingUuid = null; state.savedTotal = null; render(); break;
       case 'add': {
         const rows = state.job[d.list];
         rows.push({ finishing: { finId: '', qty: '', mult: 1, scales: false }, labor: { laborId: '', hours: '', scales: false }, addMaterials: { materialId: '', qty: 1, scales: false }, other: { desc: '', qty: 1, unitCost: '', scales: false } }[d.list]);
@@ -1436,57 +1625,54 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
       case 'del': state.job[d.list].splice(Number(d.i), 1); render(); break;
       case 'save-new': saveCalc(true); break;
       case 'save-calc': saveCalc(false); break;
-      case 'add-inventory': {
-        if (!canEdit()) { toast('Rates are locked. Unlock them first.', 'warn'); break; }
-        let added = 0, skipped = 0;
-        Seed.inventoryMaterials().forEach((x) => { if (DB.materials.some((m) => m.id === x.id || m.name.toLowerCase() === x.name.toLowerCase())) skipped++; else { DB.materials.push(x); added++; } });
-        DB.ui.inventoryAdded = true;
-        save(); toast(`Added ${added} materials${skipped ? ` (${skipped} were already there)` : ''}. Now add their prices and sizes.`); render(); break;
-      }
       case 'toggle-needs': state.needsOnly = !state.needsOnly; render(); break;
       case 'goto-matcosts': state.view = 'settings'; render(); { const el = $('#matcosts'); if (el && el.scrollIntoView) el.scrollIntoView(); } break;
       case 'add-ent': openForm(d.ent); break;
       case 'edit-ent': openForm(d.ent, d.id); break;
       case 'save-ent': saveEnt(); break;
       case 'del-ent': {
-        if (!canEdit()) { toast('Rates are locked. Unlock them first.', 'warn'); break; }
+        if (!canEdit()) { toast('Only an admin can edit rates.', 'warn'); break; }
         const r = find(DB[d.ent], d.id); const nm = r.name || r.category;
         modalCtx = { kind: 'del', ent: d.ent, id: d.id };
-        openModal(`<h2>Delete ${esc(ENT[d.ent].one)}?</h2><p>“${esc(nm)}” will be removed. Saved calculations keep their totals, but reopening one that uses it will ask you to choose a replacement.</p><div class="foot"><button class="btn" data-act="close">Keep it</button><button class="btn danger" data-act="confirm-del">Delete</button></div>`);
+        openModal(`<h2>Delete ${esc(ENT[d.ent].one)}?</h2><p>“${esc(nm)}” will be removed for everyone. Saved calculations keep their own record of what it cost then.</p><div class="foot"><button class="btn" data-act="close">Keep it</button><button class="btn danger" data-act="confirm-del">Delete</button></div>`);
         break;
       }
       case 'confirm-del': { const c = modalCtx; DB[c.ent] = DB[c.ent].filter((x) => x.id !== c.id); save(); closeModal(); toast('Deleted.'); render(); break; }
       case 'open-calc': openCalc(d.id); break;
-      case 'edit-calc': { const c = find(DB.calcs, d.id); if (!c) break; closeModal(); state.job = E.newJob(clone(c.job)); state.editingId = c.id; state.savedTotal = c.total; go('calc'); break; }
-      case 'dup-calc': { const c = find(DB.calcs, d.id); const id = padId(DB.seq++); const n = Object.assign(clone(c), { id, date: new Date().toISOString(), name: c.name + ' (copy)' }); n.job.name = n.name; DB.calcs.unshift(n); save(); toast(`Duplicated as ${id}.`); render(); break; }
-      case 'del-calc': modalCtx = { kind: 'delcalc', id: d.id }; openModal(`<h2>Delete ${esc(d.id)}?</h2><p>This removes the saved calculation from the history.</p><div class="foot"><button class="btn" data-act="close">Keep it</button><button class="btn danger" data-act="confirm-delcalc">Delete</button></div>`); break;
-      case 'confirm-delcalc': DB.calcs = DB.calcs.filter((x) => x.id !== modalCtx.id); if (state.editingId === modalCtx.id) { state.editingId = null; state.savedTotal = null; } save(); closeModal(); render(); break;
+      case 'edit-calc': { const c = find(DB.calcs, d.id); if (!c) break; closeModal(); state.job = E.newJob(clone(c.job)); state.editingId = c.id; state.editingUuid = c._uuid; state.savedTotal = c.total; go('calc'); break; }
+      case 'dup-calc': {
+        const c = find(DB.calcs, d.id); if (!c) break;
+        const j = clone(c.job); j.name = (j.name || c.name) + ' (copy)';
+        const r = E.calculate(j, DB); if (!r.ok) { toast('Could not duplicate: the original job no longer calculates cleanly with current rates.', 'warn'); break; }
+        const prevJob = state.job, prevEditing = state.editingId, prevUuid = state.editingUuid;
+        state.job = j; state.editingId = null; state.editingUuid = null; state.result = r;
+        await saveCalc(true);
+        state.job = prevJob; state.editingId = prevEditing; state.editingUuid = prevUuid; recalc();
+        break;
+      }
+      case 'del-calc': modalCtx = { kind: 'delcalc', id: d.id }; openModal(`<h2>Delete ${esc(d.id)}?</h2><p>This removes the saved calculation from the shared history.</p><div class="foot"><button class="btn" data-act="close">Keep it</button><button class="btn danger" data-act="confirm-delcalc">Delete</button></div>`); break;
+      case 'confirm-delcalc': {
+        const c = find(DB.calcs, modalCtx.id); if (!c) { closeModal(); break; }
+        const { error } = await sb.from('calculations').delete().eq('id', c._uuid);
+        if (error) { toast('Could not delete: ' + friendlyDbError(error), 'warn'); break; }
+        DB.calcs = DB.calcs.filter((x) => x.id !== modalCtx.id);
+        if (state.editingId === modalCtx.id) { state.editingId = null; state.editingUuid = null; state.savedTotal = null; }
+        closeModal(); render(); break;
+      }
       case 'export-csv': {
         const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
         const rows = [['ID', 'Date', 'Job name', 'Product', 'Quantity', 'Total cost', 'Cost per piece'].map(q).join(',')].concat(DB.calcs.map((c) => [c.id, c.date.slice(0, 10), c.name, c.product, c.quantity, c.total.toFixed(2), c.perPiece.toFixed(4)].map(q).join(',')));
-        saveFile('saved-calculations.csv', rows.join('\n')); break;
+        saveTextFile('saved-calculations.csv', rows.join('\n')); break;
       }
-      case 'export-json': saveFile('production-cost-backup.json', JSON.stringify(DB, null, 2)); break;
-      case 'import-json': modalCtx = { kind: 'import' }; openModal(`<h2>Import backup</h2><p class="hint">Paste the contents of a backup file. This replaces everything in this browser.</p><label class="f"><span>Backup JSON</span><textarea id="impbox" style="min-height:180px"></textarea></label><i class="err" id="imperr"></i><div class="foot"><button class="btn" data-act="close">Cancel</button><button class="btn danger" data-act="do-import">Replace my data</button></div>`); break;
-      case 'do-import': {
-        try { const n = normalize(JSON.parse($('#impbox').value)); if (!n.materials.length && !n.machines.length && !n.calcs.length) throw new Error('empty'); DB = n; save(); closeModal(); toast('Backup imported.'); render(); }
-        catch (err) { $('#imperr').textContent = 'That is not a valid backup. Paste the full text of an exported file.'; }
-        break;
-      }
-      case 'restore-demo': { const s = Seed.build(); ['materials', 'machines', 'finishing', 'labor'].forEach((k) => { s[k].forEach((r) => { if (!find(DB[k], r.id)) DB[k].push(r); }); }); save(); toast('Missing demo rows restored.'); render(); break; }
-      case 'clear-demo': modalCtx = { kind: 'cleardemo' }; openModal('<h2>Remove all demo data?</h2><p>Every row marked DEMO in Materials, Machines, Finishing and Labor will be deleted. Rows you added or edited stay. Saved calculations that used them will need new choices when reopened.</p><div class="foot"><button class="btn" data-act="close">Keep it</button><button class="btn danger" data-act="confirm-cleardemo">Remove demo data</button></div>'); break;
+      case 'export-json': saveTextFile('production-cost-backup.json', JSON.stringify(DB, null, 2)); break;
+      case 'clear-demo': modalCtx = { kind: 'cleardemo' }; openModal('<h2>Remove all demo data?</h2><p>Every row marked DEMO in Materials, Machines, Finishing and Labor will be deleted for everyone. Rows you added or edited stay. Saved calculations keep their own record of what it cost then.</p><div class="foot"><button class="btn" data-act="close">Keep it</button><button class="btn danger" data-act="confirm-cleardemo">Remove demo data</button></div>'); break;
       case 'confirm-cleardemo': ['materials', 'machines', 'finishing', 'labor'].forEach((k) => { DB[k] = DB[k].filter((r) => !r.demo); }); state.job = freshJob(); save(); closeModal(); toast('Demo data removed.'); render(); break;
-      case 'unlock': modalCtx = { kind: 'pin', mode: 'unlock' }; openModal('<h2>Unlock rates</h2><label class="f"><span>PIN</span><input type="password" id="pinbox" autocomplete="off"></label><i class="err" id="pinerr"></i><div class="foot"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="do-pin">Unlock</button></div>'); break;
-      case 'set-pin': modalCtx = { kind: 'pin', mode: 'set' }; openModal('<h2>Set a PIN</h2><label class="f"><span>New PIN (4 or more characters)</span><input type="password" id="pinbox" autocomplete="off"></label><i class="err" id="pinerr"></i><div class="foot"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="do-pin">Set PIN</button></div>'); break;
-      case 'do-pin': {
-        const p = $('#pinbox').value;
-        if (modalCtx.mode === 'set') { if (p.length < 4) { $('#pinerr').textContent = 'Use at least 4 characters.'; break; } DB.ui.pinHash = await sha(p); state.unlocked = true; save(); closeModal(); toast('PIN set.'); render(); }
-        else { if ((await sha(p)) === DB.ui.pinHash) { state.unlocked = true; closeModal(); toast('Unlocked.'); render(); } else $('#pinerr').textContent = 'That PIN is not correct.'; }
-        break;
+      case 'toggle-role': {
+        const { error } = await sb.from('profiles').update({ role: d.role }).eq('id', d.id);
+        if (error) { toast('Could not change that: ' + friendlyDbError(error), 'warn'); break; }
+        toast('Role updated.'); loadTeam(); break;
       }
-      case 'remove-pin': delete DB.ui.pinHash; save(); toast('PIN removed.'); render(); break;
-      case 'lock': state.unlocked = false; render(); break;
-      case 'load-test': { const j = Seed.testJobs()[Number(d.i)]; state.job = autoPick(clone(j)); state.editingId = null; state.savedTotal = null; if (!find(DB.materials, j.materialId) || !find(DB.machines, j.machineId)) toast('Some demo rates are missing from your database — pick replacements.', 'warn'); go('calc'); break; }
+      case 'load-test': { const j = Seed.testJobs()[Number(d.i)]; const { job, cleared } = sanitizeTestJob(clone(j)); state.job = job; state.editingId = null; state.editingUuid = null; state.savedTotal = null; if (!find(DB.materials, job.materialId) || !find(DB.machines, job.machineId) || cleared) toast('Some demo rates from this test job are not in your database yet — those rows were left blank.', 'warn'); go('calc'); break; }
     }
   });
 
@@ -1496,16 +1682,13 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
     if (t.dataset.q) { state.q[t.dataset.q] = t.value; const rs = t.dataset.q === 'saved' ? savedRows() : crudRows(t.dataset.q); $('#crudbody').innerHTML = rs.html; $('#crudcount').textContent = rs.count; return; }
     if (t.dataset.d && modalCtx && modalCtx.kind === 'form') {
       modalCtx.draft[t.dataset.d] = t.value;
-      if (t.dataset.dr && e.type === 'change') {
-        const d = modalCtx.draft;
-        if (modalCtx.key === 'machines' && t.dataset.d === 'type') { /* keep values; fields shown depend on type */ }
-        $('#formbody').innerHTML = formBody(modalCtx.key, d);
-      } else if (modalCtx.key === 'materials') { const box = $('.notice.info', $('#formbody')); if (box) { const dv = E.matDerived(modalCtx.draft), c = (x, u) => (x == null ? '—' : `${U.f(x, 4)} ${cur()}${u}`); box.innerHTML = `<b>Worked out from the purchase cost:</b> ${c(dv.perSheet, ' / sheet')} · ${c(dv.perMeter, ' / m')} · ${c(dv.perSqm, ' / m²')}`; } }
+      if (t.dataset.dr && e.type === 'change') { $('#formbody').innerHTML = formBody(modalCtx.key, modalCtx.draft); }
+      else if (modalCtx.key === 'materials') { const box = $('.notice.info', $('#formbody')); if (box) { const dv = E.matDerived(modalCtx.draft), c = (x, u) => (x == null ? '—' : `${U.f(x, 4)} ${cur()}${u}`); box.innerHTML = `<b>Worked out from the purchase cost:</b> ${c(dv.perSheet, ' / sheet')} · ${c(dv.perMeter, ' / m')} · ${c(dv.perSqm, ' / m²')}`; } }
       return;
     }
     if (t.dataset.s) {
       if (e.type !== 'change') return;
-      if (!canEdit()) { toast('Rates are locked.', 'warn'); render(); return; }
+      if (!canEdit()) { toast('Only an admin can edit rates.', 'warn'); render(); return; }
       const p = t.dataset.s;
       if (p === 'currency') { DB.settings.currency = t.value.trim() || 'AED'; }
       else if (p === 'unitDecimals') { DB.settings.unitDecimals = Number(t.value); }
@@ -1531,14 +1714,15 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
   }
   document.addEventListener('input', onField);
   document.addEventListener('change', (e) => {
-    if (e.target.id === 'loadtest') { if (e.target.value === '') return; const j = Seed.testJobs()[Number(e.target.value)]; state.job = autoPick(clone(j)); state.editingId = null; state.savedTotal = null; if (!find(DB.materials, j.materialId) || !find(DB.machines, j.machineId)) toast('Some demo rates are missing from your database — pick replacements.', 'warn'); render(); return; }
+    if (e.target.id === 'loadtest') { if (e.target.value === '') return; const j = Seed.testJobs()[Number(e.target.value)]; const { job, cleared } = sanitizeTestJob(clone(j)); state.job = job; state.editingId = null; state.editingUuid = null; state.savedTotal = null; if (!find(DB.materials, job.materialId) || !find(DB.machines, job.machineId) || cleared) toast('Some demo rates from this test job are not in your database yet — those rows were left blank.', 'warn'); render(); return; }
     if (e.target.type === 'checkbox' || e.target.tagName === 'SELECT' || e.target.dataset.s || e.target.dataset.q2) onField(e);
   });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#modal').classList.contains('open')) closeModal(); if (e.key === 'Enter' && $('#modal').classList.contains('open') && e.target.id === 'pinbox') { const b = $('[data-act="do-pin"]'); if (b) b.click(); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#modal').classList.contains('open')) closeModal(); });
 
-  window.__PPCC = { state, DB: () => DB, render, go, recalc };
+  window.__PPCC = { state, DB: () => DB, render, go, recalc, session: () => session, profile: () => profile };
   render();
-  if (autoAdded) toast(`Added ${autoAdded} materials from your inventory list — open Materials. They still need prices and sizes.`);
+  // onAuthStateChange fires for an existing session in most browsers, but check explicitly in case it doesn't.
+  sb.auth.getSession().then(({ data }) => { if (data.session && !session) { session = data.session; hydrate().then(() => { state.job = freshJob(); render(); }).catch((e) => toast('Could not load the shared database: ' + friendlyDbError(e), 'warn')); } });
 })();
 
 </script>

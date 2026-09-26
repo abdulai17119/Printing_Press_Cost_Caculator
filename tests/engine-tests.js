@@ -173,6 +173,32 @@ bad('overflowing extra material 1e308', { addMaterials: [{ materialId: 'mat_pape
   ok('total above 1e12 is refused', !r.ok && r.errors.some((e) => /unrealistically large/.test(e.msg)), r.errors);
 }
 
+/* ---------------- ink/hardware materials (kg, litre, piece) as "other materials" ---------------- */
+console.log('[kg / litre / piece materials]');
+{
+  const d5 = Seed.build();
+  d5.materials.push({ id: 'ink_cyan', name: 'Test ink', category: 'Ink', unit: 'litre', purchaseCost: 330, minCharge: 0 });
+  d5.materials.push({ id: 'hw_screw', name: 'Test screw', category: 'Hardware', unit: 'piece', purchaseCost: 0.35, minCharge: 0 });
+  d5.materials.push({ id: 'ink_black', name: 'Test kg ink', category: 'Ink', unit: 'kg', purchaseCost: 27, minCharge: 0 });
+  eq('litre basis label', E.matBasis(d5.materials[12]).label, 'L');
+  eq('litre basis cost = purchase cost (no geometry)', E.matBasis(d5.materials[12]).cost, 330);
+  eq('piece basis cost', E.matBasis(d5.materials[13]).cost, 0.35);
+  eq('kg basis cost', E.matBasis(d5.materials[14]).cost, 27);
+  ok('MAT_CATS includes Ink and Hardware', E.MAT_CATS.includes('Ink') && E.MAT_CATS.includes('Hardware'));
+  ok('MAT_UNITS includes kg/litre/piece', ['kg', 'litre', 'piece'].every((u) => u in E.MAT_UNITS));
+  const j = { ...jobs[1], addMaterials: [{ materialId: 'ink_cyan', qty: 0.5 }, { materialId: 'hw_screw', qty: 4 }] };
+  const r = E.calculate(j, d5);
+  ok('a job can use ink and hardware as other materials', r.ok, r.errors);
+  const inkLine = r.lines.material.find((l) => l.label.includes('Test ink'));
+  const screwLine = r.lines.material.find((l) => l.label.includes('Test screw'));
+  near('ink line = 0.5 L x 330', inkLine.amount, 165);
+  near('screw line = 4 x 0.35', screwLine.amount, 1.4);
+  // unpriced kg material still refused, never costed as 0
+  d5.materials.push({ id: 'ink_unpriced', name: 'Unpriced ink', category: 'Ink', unit: 'litre', purchaseCost: '', minCharge: 0 });
+  const r2 = E.calculate({ ...jobs[1], addMaterials: [{ materialId: 'ink_unpriced', qty: 1 }] }, d5);
+  ok('unpriced litre material is refused, not costed as 0', !r2.ok && r2.errors.some((e) => /no price yet/.test(e.msg)), r2.errors);
+}
+
 /* ---------------- unpriced materials (names imported from the inventory list) ---------------- */
 console.log('[unpriced materials]');
 {

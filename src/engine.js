@@ -20,8 +20,8 @@
   const MODES = { offset: 'Offset', digital: 'Digital', large_format: 'Large format', sticker: 'Sticker (roll or sheet + cutting)' };
   const MODE_MACHINES = { offset: ['offset'], digital: ['digital'], large_format: ['large_format', 'uv'], sticker: ['digital', 'large_format', 'uv'] };
   const FIN_METHODS = { per_piece: 'Per piece', per_sheet: 'Per sheet', per_meter: 'Per meter', per_sqm: 'Per m²', per_hour: 'Per hour', fixed: 'Fixed per job' };
-  const MAT_UNITS = { sheet: 'Per sheet', pack: 'Per pack of sheets', meter: 'Per meter', sqm: 'Per m²', roll: 'Per roll' };
-  const MAT_CATS = ['Paper', 'Card', 'Sticker', 'Vinyl', 'PVC', 'Banner', 'Fabric', 'Film', 'Packaging', 'Other'];
+  const MAT_UNITS = { sheet: 'Per sheet', pack: 'Per pack of sheets', meter: 'Per meter', sqm: 'Per m²', roll: 'Per roll', kg: 'Per kg', litre: 'Per litre', piece: 'Per piece' };
+  const MAT_CATS = ['Paper', 'Card', 'Sticker', 'Vinyl', 'PVC', 'Banner', 'Fabric', 'Film', 'Packaging', 'Ink', 'Hardware', 'Other'];
   const MACHINE_TYPES = { offset: 'Offset press', digital: 'Digital printer', large_format: 'Large-format printer', uv: 'UV printer', laminator: 'Laminator', guillotine: 'Guillotine', cutting_plotter: 'Cutting plotter', die_cutter: 'Die-cutting machine', laser: 'Laser machine' };
   const MACHINE_FIELDS = {
     offset: ['hourlyRate', 'setupRate', 'speed', 'colorUnits', 'costPerImpression'],
@@ -96,17 +96,18 @@
 
   /* Turns "purchase cost + unit" into cost per sheet / per meter / per m². */
   function matDerived(mat) {
-    if (isBlank(mat.purchaseCost)) return { perSheet: null, perMeter: null, perSqm: null, mode: materialMode(mat) };   // no price yet: never pretend it is 0
+    if (isBlank(mat.purchaseCost)) return { perSheet: null, perMeter: null, perSqm: null, perUnit: null, mode: materialMode(mat) };   // no price yet: never pretend it is 0
     const sw = num(mat.sheetW), sh = num(mat.sheetH), rw = num(mat.rollWidth), rl = num(mat.rollLength);
     const pc = num(mat.purchaseCost), pack = Math.max(1, num(mat.packSize, 1));
     const sheetArea = (sw * sh) / 1e6, rwm = rw / 1000;
-    let perSheet = null, perMeter = null, perSqm = null;
+    let perSheet = null, perMeter = null, perSqm = null, perUnit = null;
     switch (mat.unit) {
       case 'sheet': perSheet = pc; break;
       case 'pack': perSheet = pc / pack; break;
       case 'meter': perMeter = pc; break;
       case 'sqm': perSqm = pc; break;
       case 'roll': if (rl > 0) perMeter = pc / rl; break;
+      case 'kg': case 'litre': case 'piece': perUnit = pc; break;   // bought and used by the same unit (ink, hardware) — no sheet/roll geometry involved
     }
     if (perSqm === null && perSheet !== null && sheetArea > 0) perSqm = perSheet / sheetArea;
     if (perSqm === null && perMeter !== null && rwm > 0) perSqm = perMeter / rwm;
@@ -114,7 +115,7 @@
       if (perSheet === null && sheetArea > 0) perSheet = perSqm * sheetArea;
       if (perMeter === null && rwm > 0) perMeter = perSqm * rwm;
     }
-    return { perSheet, perMeter, perSqm, mode: materialMode(mat) };
+    return { perSheet, perMeter, perSqm, perUnit, mode: materialMode(mat) };
   }
 
   /* Unit used for "other material" lines: what one unit of quantity costs. */
@@ -124,6 +125,9 @@
       case 'sheet': case 'pack': return { label: 'sheet', cost: d.perSheet };
       case 'meter': case 'roll': return { label: 'm', cost: d.perMeter };
       case 'sqm': return { label: 'm²', cost: d.perSqm };
+      case 'kg': return { label: 'kg', cost: d.perUnit };
+      case 'litre': return { label: 'L', cost: d.perUnit };
+      case 'piece': return { label: 'piece', cost: d.perUnit };
     }
     return { label: 'unit', cost: null };
   }
