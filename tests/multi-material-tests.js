@@ -1,0 +1,32 @@
+const assert = require('node:assert/strict');
+const E = require('../src/engine.js'), S = require('../src/seed.js');
+const db=S.build();let checks=0;function check(v,msg){assert.ok(v,msg);checks++;}function near(a,b){check(Math.abs(a-b)<.011,`${a} != ${b}`)}
+const base=E.newJob({product:'NCR',mode:'digital',materialId:'mat_offset80',machineId:'mach_digital',qty:1000,w:148,h:210,bleed:0,margin:0,gripper:0,gutter:0,wastePct:0,setupWaste:0,setsPerPad:50});
+const one=E.calculate(base,db);check(one.ok,'baseline NCR valid');
+const multi=E.newJob({...base,addMaterials:[{role:'ncr',materialId:base.materialId,printed:true,qty:''}]});
+let r=E.calculate(multi,db);check(r.ok,JSON.stringify(r.errors));near(r.total,2*one.total);check(r.summary.ncrParts===2,'1+1');check(r.summary.pads===20,'20 pads');
+multi.addMaterials.push({role:'ncr',materialId:base.materialId,printed:true,qty:''},{role:'ncr',materialId:base.materialId,printed:true,qty:''});r=E.calculate(multi,db);near(r.total,4*one.total);check(r.summary.ncrParts===4,'1+3');
+const blank=E.calculate(E.newJob({...base,addMaterials:[{role:'ncr',materialId:base.materialId,printed:false,qty:''}]}),db);check(blank.ok,'blank NCR');near(blank.subtotals.printing,one.subtotals.printing);near(blank.subtotals.machine,one.subtotals.machine);check(blank.total>one.total,'blank costs paper');
+const different=E.calculate(E.newJob({...base,addMaterials:[{role:'ncr',materialId:'mat_paper150',printed:true,qty:'',sides:2}]}),db);check(different.ok,'different NCR stock');check(different.materialRequirements[1].good>one.summary.requirement.good,'own layout');
+const sticker=E.newJob({product:'Sticker',mode:'sticker',materialId:'mat_vinyl',machineId:'mach_lf',qty:10,w:50,h:70,unit:'cm',bleed:0,rollEdge:0,gutter:0,wastePct:0,setupWaste:0});
+db.materials.push({id:'film',name:'Test film',category:'Film',unit:'meter',rollWidth:1000,purchaseCost:2,minCharge:0});db.finishing.push({id:'paste',name:'Pasting',method:'per_sqm',rate:5,setupCost:10,minCharge:0});
+const st=E.calculate(sticker,db);
+sticker.addMaterials=[{role:'lamination',feed:'pieces',materialId:'film',qty:'',wastePct:10,setupWaste:0},{role:'mounting',materialId:'mat_pvcboard',qty:'',finId:'paste',opQty:''}];
+r=E.calculate(sticker,db);check(r.ok,JSON.stringify(r.errors));near(r.subtotals.printing,st.subtotals.printing);near(r.subtotals.machine,st.subtotals.machine);check(r.materialRequirements[1].good===3.5,'film own width');near(r.materialRequirements[1].total,3.85);check(r.materialRequirements[2].good===2,'board own sheet layout');near(r.stages[0].basis,3.5);near(r.stages[0].total,27.5);
+const doubled=E.compare(sticker,db,[10,20]);check(doubled.every(x=>x.ok),'comparison valid');check(doubled[1].total>doubled[0].total,'auto rows scale');
+sticker.addMaterials[1].qty=3;r=E.calculate(sticker,db);check(r.materialRequirements[2].good===3,'manual sheet override');sticker.addMaterials[1].qty=1.5;check(!E.calculate(sticker,db).ok,'reject fractional sheets');
+sticker.addMaterials[1].qty='';sticker.addMaterials[1].materialId='ghost';check(!E.calculate(sticker,db).ok,'deleted material rejected');
+const circ=E.newJob({...sticker,shape:'circle',diameter:5,qty:100,addMaterials:[{role:'lamination',feed:'pieces',materialId:'film',qty:''}]});check(E.calculate(circ,db).ok,'circle film uses diameter');
+const cov=E.calculate(E.newJob({...base,addMaterials:[{role:'cover',materialId:'mat_card300',qty:''}]}),db);check(cov.ok,'cover calculates');check(cov.materialRequirements[1].good===2,'20 covers fit 18 per sheet');
+const partial=E.calculate(E.newJob({...base,qty:1001}),db);check(partial.summary.pads===21,'partial pad rounds up');
+const override=E.calculate(E.newJob({...base,addMaterials:[{role:'ncr',materialId:base.materialId,printed:true,qty:100,wastePct:10,setupWaste:2}]}),db);check(override.ok,'ncr sheet override');check(override.materialRequirements[1].total===112,'override waste');
+near(override.subtotals.printing,one.subtotals.printing+100*.3); // demo digital colour click = .3
+const webJob=E.newJob({...sticker,addMaterials:[{role:'lamination',feed:'web',materialId:'film',qty:''}]});
+check(!E.calculate(webJob,db).ok,'narrow web film rejected');
+db.materials.push({id:'widefilm',name:'Wide film',category:'Film',unit:'meter',rollWidth:1500,purchaseCost:2,minCharge:0});webJob.addMaterials[0].materialId='widefilm';const web=E.calculate(webJob,db);check(web.ok,'wide web film valid');near(web.materialRequirements[1].good,web.summary.requirement.good);
+const off=E.newJob({...base,mode:'offset',machineId:'mach_offset',colors:1}); const offOne=E.calculate(off,db);
+off.addMaterials=[{role:'ncr',materialId:base.materialId,printed:true,qty:'',plates:0,setupHours:0}];const shared=E.calculate(off,db);check(shared.ok,'shared offset plates valid');near(shared.subtotals.setup,offOne.subtotals.setup);check(shared.subtotals.printing < 2*offOne.subtotals.printing,'reused plates charged once');
+const clone=JSON.stringify(off);E.calculate(off,db);check(JSON.stringify(off)===clone,'engine does not mutate job');
+check(!E.calculate(E.newJob({...base,addMaterials:[{role:'cover',materialId:'mat_card300',qty:''}],setsPerPad:''}),db).ok,'covers need pad size');
+db.finishing.push({id:'sheetcut',name:'Sheet cutting',method:'per_sheet',rate:1,minCharge:0,setupCost:0});const allSheets=E.calculate(E.newJob({...multi,finishing:[{finId:'sheetcut',qty:'',mult:1}]}),db);check(allSheets.ok,'NCR sheet finishing valid');near(allSheets.stages[0].basis,allSheets.materialRequirements.filter(x=>x.index===-1 || x.role==='ncr').reduce((a,x)=>a+x.good,0));
+console.log(`${checks} feature checks passed`);
