@@ -81,7 +81,7 @@
       setupHours: '', speed: '', clickColor: '', clickBW: '', inkSqm: '', machineSqm: '',
       wastePct: '', setupWaste: '', extraWaste: 0,
       shape: 'rect', diameter: '', cutLen: '', cutFinId: '', lamFinId: '',
-      finishing: [], labor: [], addMaterials: [], other: []
+      setsPerPad: '', finishing: [], labor: [], addMaterials: [], other: []
     }, o || {});
   }
 
@@ -210,6 +210,7 @@
     const circle = job.mode === 'sticker' && job.shape === 'circle';
     const isBook = BOOK.includes(job.product);
 
+    chk(job, 'setsPerPad', 'Sets per pad/book', { int: true, gt: 0 });
     chk(job, 'qty', 'Quantity', { required: true, int: true, gt: 0 });
     if (!(job.unit in UNIT_MM)) err('unit', 'Choose mm, cm or meter.');
     if (circle) chk(job, 'diameter', 'Diameter', { required: true, gt: 0 });
@@ -242,7 +243,23 @@
       if (r.laborId && !find(db.labor, r.laborId)) err(`labor.${i}.laborId`, 'This labor category no longer exists.');
     });
     (job.addMaterials || []).forEach((r, i) => {
-      chk(r, 'qty', 'Quantity', { min: 0 }, `addMaterials.${i}.qty`);
+      const role = r.role || 'manual';
+      if (!['manual', 'ncr', 'lamination', 'mounting', 'cover'].includes(role)) err(`addMaterials.${i}.role`, 'Choose a valid material purpose.');
+      if (role !== 'manual' && !r.materialId) err(`addMaterials.${i}.materialId`, 'Choose a material for this production layer.');
+      if (r.feed && !['web','pieces'].includes(r.feed)) err(`addMaterials.${i}.feed`, 'Choose continuous roll or separate pieces.');
+      if (role === 'ncr' && job.product !== 'NCR') err(`addMaterials.${i}.role`, 'NCR layers require the NCR product type.');
+      if (role === 'cover' && !(num(job.setsPerPad) > 0)) err('setsPerPad', 'Enter sets per pad/book to calculate covers.');
+      chk(r, 'wastePct', 'Material waste %', { min: 0, max: 100 }, `addMaterials.${i}.wastePct`);
+      chk(r, 'setupWaste', 'Material setup waste', { min: 0 }, `addMaterials.${i}.setupWaste`);
+      chk(r, 'opQty', 'Processing quantity', { min: 0 }, `addMaterials.${i}.opQty`);
+      if (r.finId && !find(db.finishing, r.finId)) err(`addMaterials.${i}.finId`, 'This processing operation no longer exists.');
+      if (r.sides && ![1,2].includes(Number(r.sides))) err(`addMaterials.${i}.sides`, 'Choose one or two printed sides.');
+      chk(r, 'plates', 'Layer plates', {int: true, min: 0}, `addMaterials.${i}.plates`);
+      chk(r, 'setupHours', 'Layer setup hours', {min: 0}, `addMaterials.${i}.setupHours`);
+      chk(r, 'colors', 'Layer colours', { int: true, min: 0 }, `addMaterials.${i}.colors`);
+      if (role === 'ncr' && job.mode === 'offset' && r.printed !== false && !isBlank(r.colors) && num(r.colors) < 1) err(`addMaterials.${i}.colors`, 'Printed offset layers need at least one colour.');
+      chk(r, 'qty', 'Quantity', role === 'manual' ? {min: 0} : {gt: 0}, `addMaterials.${i}.qty`);
+      if (role !== 'manual' && !isBlank(r.qty) && find(db.materials, r.materialId) && materialMode(find(db.materials, r.materialId)) === 'sheet' && !Number.isInteger(Number(r.qty))) err(`addMaterials.${i}.qty`, 'Sheet overrides must be whole sheets.');
       const mm = r.materialId ? find(db.materials, r.materialId) : null;
       if (r.materialId && !mm) err(`addMaterials.${i}.materialId`, 'This material no longer exists.');
       if (mm && isBlank(mm.purchaseCost)) err(`addMaterials.${i}.materialId`, `"${mm.name}" has no price yet. Enter its purchase cost in Materials.`);
@@ -253,6 +270,10 @@
       chk(r, 'unitCost', 'Unit cost', { min: 0 }, `other.${i}.unitCost`);
     });
 
+    [{materialId: job.materialId, field: 'materialId'}].concat((job.addMaterials || []).map((r,i) => ({materialId:r.materialId,field:`addMaterials.${i}.materialId`}))).forEach(({materialId,field}) => {
+      const stock = find(db.materials, materialId);
+      if (stock && stock.unit === 'pack' && !(Number.isInteger(Number(stock.packSize)) && Number(stock.packSize) >= 1)) err(field, `Material "${stock.name}" needs a confirmed whole number of sheets per pack. Edit its purchase unit and pack size in Materials.`);
+    });
     const mat = find(db.materials, job.materialId), mach = find(db.machines, job.machineId);
     if (!job.materialId) err('materialId', 'Choose a material.'); else if (!mat) err('materialId', 'This material no longer exists.');
     if (!job.machineId) err('machineId', 'Choose a machine.'); else if (!mach) err('machineId', 'This machine no longer exists.');
@@ -265,6 +286,7 @@
       });
     }
     if (mat) {
+      if (job.product === 'NCR' && materialMode(mat) !== 'sheet') err('materialId', 'The original NCR part needs sheet stock.');
       if (isBlank(mat.purchaseCost)) err('materialId', `Material "${mat.name}" has no price yet. Enter its purchase cost in Materials (or Settings → Material costs) before using it.`);
       if (!isBlank(mat.purchaseCost) && (!isNumeric(mat.purchaseCost) || Number(mat.purchaseCost) < 0)) err('materialId', `Material "${mat.name}" has an invalid price. Fix it in Materials.`);
       const hasPress = num(job.pressW) > 0 && num(job.pressH) > 0;
@@ -366,6 +388,8 @@
     }
     res.layout = layout;
 
+    if (job._manualGoodUnits != null) goodU = num(job._manualGoodUnits);
+
     /* ---- waste ---- */
     const pctWaste = rU(goodU * wastePct / 100);
     const runWaste = Math.max(pctWaste, rU(minWaste));
@@ -402,11 +426,7 @@
     const matTotal = Math.max(rawMat, minMat);
     const matFormula = `${f(goodU, dp)} good + ${f(wasteU, dp)} spoiled = ${f(totalU, dp)} ${unitName} × ${f(uc.cost, 4)} per ${uc.label}${uc.note || ''} = ${m(rawMat)}` + (minMat > rawMat ? ` → minimum charge ${m(minMat)} applies` : '');
     addVar('material', mat.name, matFormula, matTotal, true);
-    (job.addMaterials || []).forEach((r) => {
-      const mm = find(db.materials, r.materialId); if (!mm) return;
-      const b = matBasis(mm), q = num(r.qty), raw = q * b.cost, mn = num(mm.minCharge);
-      add('material', `Other material — ${mm.name}`, `${f(q, 3)} ${b.label} × ${f(b.cost, 4)}` + (mn > raw ? ` → minimum charge ${m(mn)} applies` : ''), Math.max(raw, mn), true);
-    });
+
 
     /* ---- PRINTING + MACHINE + SETUP ---- */
     const hourly = num(mach.hourlyRate);
@@ -456,13 +476,88 @@
     add('setup', `${mach.name} — setup`, `${f(setupHrs, 3)} h${runs > 1 ? ` (${runs} designs)` : ''} × ${m(setupRate)} setup rate`, setupHrs * setupRate, true);
     res.summary.machineHours = { run: runHours, setup: setupHrs };
 
+    /* ---- Additional materials: independent layouts, quantities and operations ---- */
+    res.materialRequirements = [{ index: -1, role: job.product === 'NCR' ? 'Original' : 'Main', name: mat.name,
+      materialId: mat.id, layout, good: goodU, waste: wasteU, total: totalU, unit: unitName, unitCost: uc.cost,
+      cost: r2(matTotal), printingCost: 0 }];
+    (job.addMaterials || []).forEach((row, i) => {
+      const mm = find(db.materials, row.materialId); if (!mm) return;
+      const role = row.role || 'manual', prefix = `${role === 'ncr' ? 'NCR copy' : role === 'lamination' ? 'Lamination film' : role === 'mounting' ? 'Mounting board' : role === 'cover' ? 'Cover / backing' : 'Other material'} ${i + 1}`;
+      let detail;
+      if (role === 'manual') {
+        const b = matBasis(mm), q = num(row.qty), raw = q * b.cost, cost = Math.max(raw, num(mm.minCharge));
+        add('material', `${prefix} — ${mm.name}`, `${f(q, 3)} ${b.label} × ${f(b.cost, 4)}`, cost, true);
+        detail = { index: i, role, name: mm.name, materialId: mm.id, good: q, waste: 0, total: q, unit: b.label, unitCost: b.cost, cost: r2(cost), printingCost: 0, layout: null };
+      } else {
+        const layer = newJob(clone(job));
+        Object.assign(layer, { product: 'Custom', materialId: mm.id, addMaterials: [], finishing: [], labor: [], other: [], lamFinId: '', cutFinId: '', setsPerPad: '' });
+        const printed = role === 'ncr' && row.printed !== false;
+        if (role === 'ncr') {
+          layer.sides = isBlank(row.sides) ? job.sides : Number(row.sides);
+          layer.colors = isBlank(row.colors) ? job.colors : row.colors;
+          layer.colorMode = row.colorMode || job.colorMode;
+          layer.plates = isBlank(row.plates) ? '' : row.plates;
+          layer.setupHours = isBlank(row.setupHours) ? job.setupHours : row.setupHours;
+          if (materialMode(mm) !== 'sheet') { res.errors.push({ field: `addMaterials.${i}.materialId`, msg: 'NCR copies need sheet materials.' }); return; }
+        } else {
+          layer.w = W / u; layer.h = H / u; layer.shape = 'rect'; layer.ow = ''; layer.oh = ''; layer.pages = ''; layer.pressW = ''; layer.pressH = ''; layer.parentDivisor = 1;
+          layer.margin = 0; layer.gripper = 0; layer.rollEdge = 0; layer.sides = 1;
+          if (role !== 'lamination') layer.bleed = 0;
+          if (role === 'cover') layer.qty = Math.ceil(qty / num(job.setsPerPad));
+        }
+        layer.wastePct = isBlank(row.wastePct) ? (role === 'ncr' ? (isBlank(job.wastePct) ? num(WS.pct) : job.wastePct) : 0) : row.wastePct;
+        layer.setupWaste = isBlank(row.setupWaste) ? (role === 'ncr' ? (isBlank(job.setupWaste) ? num(WS.setup) : job.setupWaste) : 0) : row.setupWaste;
+        layer.extraWaste = 0;
+        layer._manualGoodUnits = isBlank(row.qty) ? null : num(row.qty);
+        if (role === 'lamination' && (row.feed || 'web') === 'web' && kind === 'roll') {
+          if (materialMode(mm) !== 'roll' || num(mm.rollWidth) < rollW) {
+            res.errors.push({field: `addMaterials.${i}.materialId`, msg: 'Continuous roll lamination needs a film roll at least as wide as the printing roll. Choose separate pieces if you cut and rearrange the job first.'}); return;
+          }
+          if (isBlank(row.qty)) layer._manualGoodUnits = goodU;
+        }
+        let layerDb = db;
+        if (!printed) {
+          const neutral = { id: '__material_only__', name: 'Material layout', type: materialMode(mm) === 'roll' ? 'large_format' : 'digital', speed: 1, hourlyRate: 0, setupRate: 0, clickColor: 0, clickBW: 0, costPerSqm: 0 };
+          layer.machineId = neutral.id; layer.mode = neutral.type === 'digital' ? 'digital' : 'large_format';
+          const settings = clone(S); settings.waste = settings.waste || {}; settings.waste[layer.mode] = {pct: 0, setup: 0, min: role === 'ncr' ? num(WS.min) : 0};
+          layerDb = Object.assign({}, db, { machines: db.machines.concat([neutral]), settings });
+          layer.setupHours = 0; layer.inkSqm = 0; layer.machineSqm = 0; layer.clickColor = 0; layer.clickBW = 0;
+        }
+        const lr = calculate(layer, layerDb);
+        if (!lr.ok) { lr.errors.forEach((e) => res.errors.push({ field: `addMaterials.${i}.materialId`, msg: `${prefix}: ${e.msg}` })); return; }
+        lr.warnings.forEach((w) => res.warnings.push(`${prefix}: ${w}`));
+        const categories = printed ? ['material','printing','machine','setup','waste'] : ['material','waste'];
+        categories.forEach((c) => lr.lines[c].forEach((l) => res.lines[c].push(Object.assign({}, l, { label: `${prefix} — ${l.label}` }))));
+        const req = lr.summary.requirement;
+        detail = { index: i, role, name: mm.name, materialId: mm.id, layout: lr.layout, good: req.good, waste: req.waste, total: req.total, unit: lr.summary.unitName,
+          unitCost: req.perUnit, cost: r2(lr.lines.material.reduce((a,l)=>a+l.amount,0) + lr.lines.waste.filter(l=>l.label.startsWith(mm.name)).reduce((a,l)=>a+l.amount,0)),
+          printingCost: printed ? r2(lr.total - Math.max(req.total * req.perUnit, num(mm.minCharge), num(S.minimums && S.minimums.material))) : 0 };
+      }
+      res.materialRequirements.push(detail);
+      if (row.finId) {
+        const op = find(db.finishing, row.finId); if (!op) return;
+        let basis = op.method === 'per_piece' ? (role === 'cover' ? Math.ceil(qty / num(job.setsPerPad)) : qty) : op.method === 'per_sheet' ? detail.good : op.method === 'per_sqm' ? qty * W * H / 1e6 : op.method === 'per_meter' ? (detail.layout && detail.layout.kind === 'roll' ? detail.good : qty * 2 * (W + H) / 1000) : op.method === 'fixed' ? 1 : 0;
+        if (!isBlank(row.opQty)) basis = num(row.opQty);
+        else if (op.method === 'per_hour') res.warnings.push(`${prefix}: enter processing hours for ${op.name}.`);
+        const raw = basis * num(op.rate), run = Math.max(raw, num(op.minCharge), num(S.minimums && S.minimums.finishing)), setup = num(op.setupCost);
+        add('finishing', `${prefix} — ${op.name}`, `${f(basis, 3)} × ${f(num(op.rate), 4)} (${FIN_METHODS[op.method]})`, run, true);
+        add('setup', `${prefix} — ${op.name} setup`, 'Fixed processing setup', setup);
+        res.stages.push({ name: `${prefix} — ${op.name}`, method: op.method, basis, mult: 1, qtyEff: basis, unit: op.method, rate: num(op.rate), raw, minCharge: num(op.minCharge), setup: r2(setup), run: r2(run), total: r2(run + setup) });
+      }
+      if (role === 'lamination' && job.lamFinId) res.warnings.push('Lamination film is charged separately. Ensure the selected lamination operation excludes film, and select the processing operation only once.');
+    });
+    if (job.product === 'NCR') {
+      res.summary.ncrParts = 1 + (job.addMaterials || []).filter(r => r.role === 'ncr').length;
+      if (num(job.setsPerPad) > 0) res.summary.pads = Math.ceil(qty / num(job.setsPerPad));
+    }
+
     /* ---- FINISHING (each stage separately) ---- */
     const shape = job.mode === 'sticker' ? (job.shape || 'rect') : 'rect';
     let perim = 2 * (W + H);
     if (shape === 'circle') perim = Math.PI * W;
     else if (shape === 'custom') { if (num(job.cutLen) > 0) perim = num(job.cutLen); else res.warnings.push('Custom shape: no cut length entered, so the bounding-box perimeter is used for cutting.'); }
     const perimM = (perim * qty) / 1000;
-    const goodSheets = kind === 'sheet' ? goodU : 0;
+    const goodSheets = kind === 'sheet' ? goodU + (job.product === 'NCR' ? res.materialRequirements.filter(x => x.role === 'ncr').reduce((a,x) => a + x.good, 0) : 0) : 0;
     const areaAuto = kind === 'sheet' ? (goodSheets * sheetW * sheetH) / 1e6 : goodU * (rollW / 1000);
     const finRows = (job.finishing || []).filter((r) => r && r.finId).map((r) => Object.assign({}, r));
     if (job.mode === 'sticker') {
@@ -474,7 +569,7 @@
       const method = FIN_METHODS[op.method] ? op.method : 'per_piece';
       let auto = 0, lbl = 'piece', autoTxt = '';
       if (method === 'per_piece') { auto = qty; lbl = 'pieces'; autoTxt = 'job quantity'; }
-      else if (method === 'per_sheet') { auto = goodSheets; lbl = 'sheets'; autoTxt = 'good press sheets'; if (kind === 'roll' && isBlank(r.qty)) res.warnings.push(`"${op.name}" is priced per sheet but this job uses roll material — enter a quantity for it.`); }
+      else if (method === 'per_sheet') { auto = goodSheets; lbl = 'sheets'; autoTxt = job.product === 'NCR' ? 'good press sheets across all NCR parts' : 'good press sheets'; if (kind === 'roll' && isBlank(r.qty)) res.warnings.push(`"${op.name}" is priced per sheet but this job uses roll material — enter a quantity for it.`); }
       else if (method === 'per_meter') { auto = perimM; lbl = 'm'; autoTxt = 'cut length = perimeter of every piece'; }
       else if (method === 'per_sqm') { auto = areaAuto; lbl = 'm²'; autoTxt = kind === 'sheet' ? 'good sheets × sheet area' : 'good roll length × roll width'; }
       else if (method === 'per_hour') { auto = 0; lbl = 'h'; autoTxt = 'enter hours'; if (isBlank(r.qty)) res.warnings.push(`"${op.name}" is priced per hour — enter the hours it takes.`); }
@@ -526,8 +621,8 @@
       const j = clone(job); j.qty = q;
       const ratio = base > 0 ? q / base : 1;
       (j.labor || []).forEach((r) => { if (r.scales) r.hours = num(r.hours) * ratio; });
-      (j.other || []).forEach((r) => { if (r.scales) r.qty = num(r.qty) * ratio; });
-      (j.addMaterials || []).forEach((r) => { if (r.scales) r.qty = num(r.qty) * ratio; });
+      (j.other || []).forEach((r) => { if (r.scales && !isBlank(r.qty)) r.qty = num(r.qty) * ratio; });
+      (j.addMaterials || []).forEach((r) => { if (r.scales) { if (!isBlank(r.qty)) { const x = num(r.qty) * ratio, mat = find(db.materials, r.materialId); r.qty = r.role && r.role !== 'manual' && mat && materialMode(mat) === 'sheet' ? Math.ceil(x) : x; } if (!isBlank(r.opQty)) r.opQty = num(r.opQty) * ratio; } });
       (j.finishing || []).forEach((r) => { if (r.scales && !isBlank(r.qty)) r.qty = num(r.qty) * ratio; });
       const r = calculate(j, db);
       return { qty: q, ok: r.ok, errors: r.errors, total: r.total, perPiece: r.perPiece, units: r.summary ? r.summary.requirement.total : 0, unitName: r.summary ? r.summary.unitName : '' };
@@ -535,7 +630,7 @@
   }
 
   return {
-    version: '1.0', UNIT_MM, PRODUCT_TYPES, MODES, MODE_MACHINES, FIN_METHODS, MAT_UNITS, MAT_CATS, MACHINE_TYPES, MACHINE_FIELDS, SPEED_UNIT, CATEGORIES, BOOK,
+    version: '1.1', UNIT_MM, PRODUCT_TYPES, MODES, MODE_MACHINES, FIN_METHODS, MAT_UNITS, MAT_CATS, MACHINE_TYPES, MACHINE_FIELDS, SPEED_UNIT, CATEGORIES, BOOK,
     defaultSettings, newJob, validate, calculate, compare, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
     util: { num, r2, f, m, isBlank, isNumeric, clone, find }
   };

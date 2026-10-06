@@ -154,10 +154,35 @@
   const F = {
     num: (k, label, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="number" step="any" inputmode="decimal" value="${esc(val(k))}" placeholder="${esc(o.ph == null ? '' : o.ph)}"><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
     txt: (k, label, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="text" value="${esc(val(k))}" placeholder="${esc(o.ph || '')}"><i class="err" data-err="${k}"></i></label>`; },
-    sel: (k, label, options, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><select data-k="${k}"${o.r ? ' data-r="1"' : ''}${o.dis ? ' disabled' : ''}>${options.map((x) => opt(x[0], x[1], val(k))).join('')}</select><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
+    sel: (k, label, options, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><select data-k="${k}"${o.r ? ' data-r="1"' : ''}${o.dis ? ' disabled' : ''}>${options.map((x) => opt(x[0], x[1], val(k) === '' && k.endsWith('.role') ? 'manual' : val(k) === '' && k.endsWith('.feed') ? 'web' : val(k))).join('')}</select><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
     chk: (k, label) => `<label class="chk"><input type="checkbox" data-k="${k}"${getPath(state.job, k) ? ' checked' : ''}> ${label}</label>`
   };
   const matLabel = (m) => { const n = matNeeds(m); return m.name + (n.price ? '  — needs price' : n.size ? '  — needs size' : ''); };
+
+  function materialPriceHTML(m) {
+    if (!m) return '';
+    const rate = x => `${esc(cur())} ${Number(x).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})}`;
+    let text;
+    if (isBlank(m.purchaseCost) || !U.isNumeric(m.purchaseCost) || num(m.purchaseCost) < 0) text = 'Purchase price needs to be entered in Materials.';
+    else {
+      const d = E.matDerived(m), cost = num(m.purchaseCost);
+      if (m.unit === 'pack') text = Number.isInteger(Number(m.packSize)) && num(m.packSize) > 0
+        ? `${rate(cost)} per pack ÷ ${U.f(num(m.packSize))} sheets = <strong>${rate(d.perSheet)} / sheet</strong>`
+        : `${rate(cost)} per pack · sheets per pack must be confirmed.`;
+      else if (m.unit === 'roll') text = num(m.rollLength) > 0
+        ? `${rate(cost)} per roll ÷ ${U.f(num(m.rollLength), 3)} m = <strong>${rate(d.perMeter)} / m</strong>`
+        : `${rate(cost)} per roll · roll length must be entered.`;
+      else {
+        const b = E.matBasis(m);
+        text = `<strong>${rate(cost)} / ${esc(b.label)}</strong> · purchase price is for one ${esc(b.label)}`;
+        if (m.unit === 'sqm') {
+          if (d.perSheet != null) text += ` · ${rate(d.perSheet)} / purchased sheet`;
+          if (d.perMeter != null) text += ` · ${rate(d.perMeter)} / linear m`;
+        }
+      }
+    }
+    return `<div class="material-price span2" data-price-for="${esc(m.id)}"><div><span class="price-caption">Purchase price basis</span><div>${text}</div></div>${canEdit() ? `<button class="lnk" data-act="edit-ent" data-ent="materials" data-id="${esc(m.id)}">Edit unit &amp; price</button>` : ''}</div>`;
+  }
 
   /* ================= views: New calculation ================= */
   function head(title, sub, actions) { return `<header class="pagehead"><div><h1>${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ''}</div><div class="actions">${actions || ''}</div></header>`; }
@@ -177,7 +202,7 @@
       ${F.txt('name', 'Job name', { cls: 'span2', ph: 'e.g. Menu cards for client job 1042' })}
       ${F.sel('product', 'Product type', E.PRODUCT_TYPES.map((p) => [p, p]), { r: 1 })}
       ${F.sel('mode', 'Printing method', Object.keys(E.MODES).map((k) => [k, E.MODES[k]]), { r: 1 })}
-      ${F.num('qty', 'Quantity (pieces)', { ph: '1000' })}
+      ${F.num('qty', j.product === 'NCR' ? 'Quantity (complete sets)' : 'Quantity (pieces)', { ph: '1000' }) + (j.product === 'NCR' ? F.num('setsPerPad', 'Sets per pad / book', { ph: '50', hint: 'Optional. Quantity above is sets; 100 books × 50 sets = 5,000 sets.' }) : '')}
       ${j.mode === 'sticker' ? F.sel('shape', 'Sticker shape', [['rect', 'Rectangle'], ['circle', 'Circle'], ['custom', 'Custom shape']], { r: 1 }) : ''}
       ${F.sel('unit', 'Size unit', [['mm', 'mm'], ['cm', 'cm'], ['m', 'meter']], { r: 1 })}
       ${circle ? F.num('diameter', `Diameter (${U_})`) : F.num('w', `Finished width (${U_})`) + F.num('h', `Finished height (${U_})`)}
@@ -191,17 +216,13 @@
 
     const matOpts = [['', '— choose material —']].concat(DB.materials.map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
     const machOpts = [['', '— choose machine —']].concat(DB.machines.filter((m) => E.MODE_MACHINES[j.mode].includes(m.type)).map((m) => [m.id, m.name]));
-    const layoutCard = `<section class="card"><h3>2 · Material &amp; layout <small>${kind === 'roll' ? 'Roll layout' : 'Sheet layout'}</small></h3><div class="grid g2">
-      ${F.sel('materialId', 'Material', matOpts, { r: 1, cls: 'span2' })}
-      ${F.sel('machineId', 'Printing machine', machOpts, { r: 1, cls: 'span2' })}
-      </div><div class="grid" style="margin-top:12px">
+    const layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · first part' : 'Main printing material'}</h4><div class="grid g2">
+      ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1 })}${materialPriceHTML(mat)}
+      </div><details class="adv" data-panel="main-layout"><summary>Layout &amp; sheet cutting <span>${kind === 'roll' ? 'Roll' : 'Sheet'}</span></summary><div class="grid" style="margin-top:12px">
       ${kind === 'sheet' ? F.num('margin', 'Sheet margin, each edge (mm)', { hint: 'Not printable' }) + F.num('gripper', 'Gripper edge (mm)', { hint: 'Extra, one edge' }) : F.num('rollEdge', 'Roll edge margin, each side (mm)')}
       ${F.num('gutter', 'Gap between pieces (mm)')}
-      </div>
-      ${kind === 'sheet' ? `<details class="adv"${pressOv || num(j.parentDivisor) > 1 ? ' open' : ''}><summary>Cut press sheets from a bigger purchased sheet</summary><div class="grid" style="margin-top:10px">
-        ${F.num('pressW', 'Press sheet width (mm)', { ph: mat && mat.sheetW ? mat.sheetW : '' })}${F.num('pressH', 'Press sheet height (mm)', { ph: mat && mat.sheetH ? mat.sheetH : '' })}
-        ${F.num('parentDivisor', 'Press sheets per purchased sheet', { hint: 'Only for materials priced per sheet/pack' })}</div></details>` : ''}
-    </section>`;
+      ${kind === 'sheet' ? F.num('pressW', 'Press sheet width (mm)', { ph: mat && mat.sheetW ? mat.sheetW : '' }) + F.num('pressH', 'Press sheet height (mm)', { ph: mat && mat.sheetH ? mat.sheetH : '' }) + F.num('parentDivisor', 'Press sheets per purchased sheet', { hint: 'Only for materials priced per sheet/pack' }) : ''}
+      </div></details></div>`;
 
     let printFields = '';
     if (costing === 'offset') {
@@ -216,14 +237,14 @@
       printFields = F.num('inkSqm', `Ink cost per m² (${cur()})`, { ph: P.areaInkPerSqm }) + F.num('machineSqm', `Machine cost per m² (${cur()})`, { ph: mach ? mach.costPerSqm : '' })
         + F.num('setupHours', 'Setup time (hours)', { ph: P.setupHours[j.mode] }) + F.num('speed', 'Machine speed (m²/h)', { ph: mach ? mach.speed : '' });
     }
-    const printCard = `<section class="card"><h3>3 · Printing <small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid">${printFields}</div>
+    const printCard = `<section class="card"><h3>3 · Printing <small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid g2">${F.sel('machineId', 'Printing machine', machOpts, {r: 1})}${printFields}</div>
       <p class="hint">Empty boxes use the rate from the Machines database or Settings (shown in grey). Type a number to override it for this job only.</p></section>`;
 
-    const wasteCard = `<section class="card"><h3>4 · Waste <small>${E.MODES[j.mode]}</small></h3><div class="grid">
+    const wasteCard = `<details class="adv" data-panel="main-waste"><summary>Main material waste <span>Defaults: ${WS.pct}%</span></summary><div class="grid" style="margin-top:12px">
       ${F.num('wastePct', 'Waste %', { ph: WS.pct })}
       ${F.num('setupWaste', `Setup waste (${kind === 'sheet' ? 'sheets' : 'm'} per run)`, { ph: WS.setup })}
       ${F.num('extraWaste', `Additional waste (${kind === 'sheet' ? 'sheets' : 'm'})`)}
-      </div><p class="hint">Minimum waste for this method: ${WS.min} ${kind === 'sheet' ? 'sheets' : 'm'}. Defaults per method are edited in Settings.</p></section>`;
+      </div><p class="hint">NCR copies inherit these defaults unless overridden. Minimum waste: ${WS.min} ${kind === 'sheet' ? 'sheets' : 'm'}.</p></details>`;
 
     const finOpts = [['', '— choose —']].concat(DB.finishing.map((f) => [f.id, f.name]));
     const chain = ['Printing'].concat(j.mode === 'sticker' && j.lamFinId ? [(find(DB.finishing, j.lamFinId) || {}).name || ''] : []).concat(j.finishing.filter((r) => r.finId).map((r) => (find(DB.finishing, r.finId) || {}).name || '')).concat(j.mode === 'sticker' && j.cutFinId ? [(find(DB.finishing, j.cutFinId) || {}).name || ''] : []).filter(Boolean);
@@ -237,39 +258,60 @@
         ${F.chk(`finishing.${i}.scales`, 'Scales')}
         <button class="btn sm" data-act="del" data-list="finishing" data-i="${i}" aria-label="Remove operation">Remove</button></div>`;
     }).join('');
-    const stickerFin = j.mode === 'sticker' ? `<div class="grid g2" style="margin-bottom:12px">${F.sel('lamFinId', 'Lamination', [['', 'None']].concat(DB.finishing.map((f) => [f.id, f.name])), { r: 1 })}${F.sel('cutFinId', 'Cutting method', [['', 'None']].concat(DB.finishing.map((f) => [f.id, f.name])), { r: 1 })}</div>` : '';
-    const finCard = `<section class="card"><h3>5 · Finishing <small>each stage is costed separately</small></h3>
+    const stickerFin = j.mode === 'sticker' ? `<div class="grid g2" style="margin-bottom:12px">${F.sel('cutFinId', 'Cutting method', [['', 'None']].concat(DB.finishing.map((f) => [f.id, f.name])), { r: 1 })}</div>` : '';
+    const finCard = `<section class="card"><h3>4 · Finishing <small>each stage is costed separately</small></h3>
       <div class="chain">${chain.map((c, i) => (i ? '<i>→</i>' : '') + `<b>${esc(c)}</b>`).join('')}</div>${stickerFin}
       <div class="rows">${finRows || '<p class="hint" style="margin:0">No finishing operations added.</p>'}</div>
       <div style="margin-top:10px"><button class="btn sm" data-act="add" data-list="finishing">Add finishing operation</button></div>
-      <p class="hint">Quantity “auto” follows the operation's pricing method: pieces, good sheets, cut length (perimeter of all pieces), area, or once per job. “Times” multiplies it (e.g. 2 for both sides, 4 eyelets). Tick “Scales” to let the row grow with quantity in the comparison table.</p></section>`;
+      <p class="hint">Quantity “auto” follows the operation's pricing method: pieces/sets, good sheets (all NCR parts for NCR), cut length (perimeter of all pieces), area, or once per job. “Times” multiplies it (e.g. 2 for both sides, 4 eyelets). Tick “Scales” to let the row grow with quantity in the comparison table.</p></section>`;
 
     const labOpts = [['', '— choose —']].concat(DB.labor.map((l) => [l.id, l.category]));
     const labRows = j.labor.map((r, i) => `<div class="row lab">
         <label class="f"><span>Labor category</span><select data-k="labor.${i}.laborId" data-r="1">${labOpts.map((x) => opt(x[0], x[1], r.laborId)).join('')}</select><i class="err" data-err="labor.${i}.laborId"></i></label>
         <label class="f"><span>Hours</span><input type="number" step="any" data-k="labor.${i}.hours" value="${esc(r.hours)}"><i class="err" data-err="labor.${i}.hours"></i></label>
         ${F.chk(`labor.${i}.scales`, 'Scales')}<button class="btn sm" data-act="del" data-list="labor" data-i="${i}">Remove</button></div>`).join('');
-    const laborCard = `<section class="card"><h3>6 · Labor</h3><div class="rows">${labRows || '<p class="hint" style="margin:0">No labor added.</p>'}</div>
+    const laborCard = `<section class="card"><h3>5 · Labor</h3><div class="rows">${labRows || '<p class="hint" style="margin:0">No labor added.</p>'}</div>
       <div style="margin-top:10px"><button class="btn sm" data-act="add" data-list="labor">Add labor operation</button></div>
       <p class="hint">Machine setup time is already costed at the machine's setup rate. Add labor only for people-time that is not already inside a machine rate.</p></section>`;
 
     const addMatOpts = [['', '— choose —']].concat(DB.materials.map((m) => [m.id, m.name]));
-    const addRows = j.addMaterials.map((r, i) => { const mm = find(DB.materials, r.materialId); const b = mm ? E.matBasis(mm) : null; return `<div class="row mat">
-        <label class="f"><span>Other material</span><select data-k="addMaterials.${i}.materialId" data-r="1">${addMatOpts.map((x) => opt(x[0], x[1], r.materialId)).join('')}</select><i class="err" data-err="addMaterials.${i}.materialId"></i></label>
-        <label class="f"><span>Quantity${b ? ` (${b.label})` : ''}</span><input type="number" step="any" data-k="addMaterials.${i}.qty" value="${esc(r.qty)}"><i class="err" data-err="addMaterials.${i}.qty"></i></label>
-        ${F.chk(`addMaterials.${i}.scales`, 'Scales')}<button class="btn sm" data-act="del" data-list="addMaterials" data-i="${i}">Remove</button></div>`; }).join('');
+    const roles = [['manual', 'Other / manual quantity'], ['ncr', 'NCR copy layer'], ['lamination', 'Lamination film'], ['mounting', 'Mounting board'], ['cover', 'Cover / backing per pad']];
+    const addRows = j.addMaterials.map((r, i) => {
+
+      const mm = find(DB.materials, r.materialId), b = mm ? E.matBasis(mm) : null, k = `addMaterials.${i}`, role = r.role || 'manual';
+      const op = find(DB.finishing, r.finId), auto = role !== 'manual';
+      const title = role === 'ncr' ? `Copy ${j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length}` : (roles.find(x => x[0] === role) || roles[0])[1];
+      return `<div class="material-layer" data-material-index="${i}"><h4>${esc(title)}<button class="btn sm" data-act="del" data-list="addMaterials" data-i="${i}" aria-label="Remove ${esc(title)}">Remove</button></h4><div class="grid g2">
+        ${F.sel(k + '.role', 'Purpose', roles, {r: 1})}
+        ${F.sel(k + '.materialId', 'Stock', addMatOpts, {r: 1})}${materialPriceHTML(mm)}
+        ${!auto ? F.num(k + '.qty', `Quantity${b ? ' (' + b.label + ')' : ''}`, {ph: '1'}) : ''}
+        ${role === 'lamination' ? F.sel(k + '.feed', 'Lamination method', [['web', 'Continuous printed roll (same length)'], ['pieces', 'Separate cut pieces (own layout)']], {r: 1, hint: 'Continuous requires film as wide as the printing roll. Separate pieces assumes you cut and rearrange them first.'}) : ''}
+        ${role === 'ncr' ? F.chk(k + '.printed', 'Print this copy') + F.sel(k + '.sides', 'Printed sides', [['', 'Same as original'], ['1', '1 side'], ['2', '2 sides']]) + (costing === 'offset' ? F.num(k + '.colors', 'Offset colours', {ph: 'same as original'}) + F.num(k + '.plates', 'Offset plates for this copy', {ph: 'auto', hint: 'Enter 0 if it reuses the original plates.'}) : F.sel(k + '.colorMode', 'Digital colour mode', [['', 'Same as original'], ['color', 'Colour'], ['bw', 'Black & white']])) + F.num(k + '.setupHours', 'Printing setup hours for this copy', {ph: 'same as original', hint: 'Enter the actual stock-change setup, or 0 if already included.'}) : ''}
+        ${F.sel(k + '.finId', 'Processing operation (optional)', [['', 'None']].concat(DB.finishing.map(f => [f.id, f.name])), {r: 1})}
+        ${r.finId ? F.num(k + '.opQty', op && op.method === 'per_hour' ? 'Processing hours' : 'Processing quantity override', {ph: 'auto', hint: 'Per m² uses finished area; per sheet uses good sheets; per metre uses roll length or sheet-piece perimeter.'}) : ''}
+        </div><details class="adv" data-panel="material-${i}-quantity"><summary>${auto ? 'Quantity &amp; waste overrides' : 'Comparison options'} <span>${auto ? 'Automatic' : 'Manual'}</span></summary><div class="grid g2" style="margin-top:12px">
+        ${auto ? F.num(k + '.qty', 'Good quantity override (sheet / metre)', {ph: 'auto', hint: 'Empty calculates from this material’s own size. Override is good press sheets or linear metres, before waste.'}) : ''}
+        ${auto ? F.num(k + '.wastePct', 'Material waste %', {ph: role === 'ncr' ? 'job default' : '0'}) + F.num(k + '.setupWaste', 'Setup waste (sheet / metre)', {ph: role === 'ncr' ? 'job default' : '0'}) : ''}
+        ${F.chk(k + '.scales', 'Scale manual overrides with comparison quantity')}
+        </div></details></div>`;
+    }).join('');
     const othRows = j.other.map((r, i) => `<div class="row oth">
         <label class="f"><span>Description</span><input type="text" data-k="other.${i}.desc" value="${esc(r.desc)}" placeholder="Glue, tape, cutting die…"></label>
         <label class="f"><span>Quantity</span><input type="number" step="any" data-k="other.${i}.qty" value="${esc(r.qty)}"><i class="err" data-err="other.${i}.qty"></i></label>
         <label class="f"><span>Unit cost (${cur()})</span><input type="number" step="any" data-k="other.${i}.unitCost" value="${esc(r.unitCost)}"><i class="err" data-err="other.${i}.unitCost"></i></label>
         ${F.chk(`other.${i}.scales`, 'Scales')}<button class="btn sm" data-act="del" data-list="other" data-i="${i}">Remove</button></div>`).join('');
-    const otherCard = `<section class="card"><h3>7 · Other materials &amp; production costs</h3>
-      <div class="rows">${addRows}${othRows || (addRows ? '' : '<p class="hint" style="margin:0">Nothing added.</p>')}</div>
-      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="add" data-list="addMaterials">Add other material</button><button class="btn sm" data-act="add" data-list="other">Add custom cost</button></div></section>`;
+    const materialActions = `<div class="material-actions"><button class="btn sm" data-act="add" data-list="addMaterials">+ Add material</button>${j.product === 'NCR' ? '<button class="btn sm" data-act="add-material-role" data-role="ncr">+ NCR copy</button><button class="btn sm" data-act="add-material-role" data-role="cover">+ Cover / backing</button>' : '<button class="btn sm" data-act="add-material-role" data-role="lamination">+ Lamination film</button><button class="btn sm" data-act="add-material-role" data-role="mounting">+ Mounting board</button>'}</div>`;
+    const materialCard = `<section class="card" id="job-materials"><h3>2 · Materials <small>${1 + j.addMaterials.length} stocks</small></h3>
+      <p class="hint section-intro">Choose every stock used in this job here. Add processing to film or board below its stock selection.</p>
+      ${j.product === 'NCR' ? '<p class="hint">One original plus each copy makes a complete set. Copies use the main printing machine; adjust reused plates and stock-change setup as needed.</p>' : ''}
+      ${materialActions}${layoutCard}${wasteCard}<div class="rows material-list">${addRows}</div>
+      ${j.lamFinId ? `<details class="adv" data-panel="legacy-lamination" open><summary>Existing lamination operation</summary><div class="grid g2" style="margin-top:12px">${F.sel('lamFinId', 'Lamination operation', [['', 'None']].concat(DB.finishing.map(f => [f.id,f.name])), {r: 1})}</div><p class="hint">This saved job already has a lamination operation. Charge processing only once when adding a film row.</p></details>` : ''}
+      <p class="hint">Processing rates should exclude materials charged separately.</p></section>`;
+    const otherCard = `<section class="card" id="custom-costs"><h3>6 · Additional costs</h3><div class="rows">${othRows || '<p class="hint">Add any costs not covered above.</p>'}</div><div class="material-actions"><button class="btn sm" data-act="add" data-list="other">+ Add custom cost</button></div></section>`;
 
     const actions = `<label class="f" style="min-width:230px"><span>Load a demo test job</span><select id="loadtest"><option value="">— choose —</option>${tests.map((t, i) => `<option value="${i}">${esc(t.name)}</option>`).join('')}</select></label><button class="btn" data-act="new-job">Start new</button>`;
     return head('New cost calculation', 'Enter the job. The production cost updates as you type.', actions)
-      + `<div class="calc"><div class="col-form">${jobCard}${layoutCard}${printCard}${wasteCard}${finCard}${laborCard}${otherCard}</div>
+      + `<div class="calc"><div class="col-form">${jobCard}${materialCard}${printCard}${finCard}${laborCard}${otherCard}</div>
       <div class="col-res"><div id="results"></div>
         <section class="card" id="cmpcard"><h3>Compare quantities <small>uses the real calculation</small></h3>
           <label class="f"><span>Quantities (comma separated)</span><input id="cmpq" type="text" value="${esc(state.cmp)}"></label><div id="cmptable" style="margin-top:12px"></div></section></div></div>
@@ -330,6 +372,11 @@
     rows.push(['Labor', `${U.f(s.labor.hours, 2)} h`]);
     return `<dl class="kv">${rows.map((x) => `<dt>${x[0]}</dt><dd>${x[1]}</dd>`).join('')}</dl>`;
   }
+  function materialRequirementsHTML(r) {
+    if (!r.materialRequirements || r.materialRequirements.length < 2) return '';
+    return `<section class="card"><h3>All material requirements</h3><div class="tscroll"><table class="tbl"><thead><tr><th>Purpose / stock</th><th>Good</th><th>Waste</th><th>Total</th><th>Unit</th><th>Rate used / unit</th><th>Material cost</th></tr></thead><tbody>${r.materialRequirements.map(x => `<tr><td>${esc(x.role)} · ${esc(x.name)}</td><td>${U.f(x.good,3)}</td><td>${U.f(x.waste,3)}</td><td>${U.f(x.total,3)}</td><td>${esc(x.unit)}</td><td>${esc(cur())} ${Number(x.unitCost).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})}</td><td>${money(x.cost)}</td></tr>`).join('')}</tbody></table></div></section>`;
+  }
+
   function resultsHTML(r) {
     const j = state.job;
     const editBanner = state.editingId ? (() => { const diff = state.savedTotal != null && r.ok && Math.abs(state.savedTotal - r.total) >= 0.005; return `<div class="notice info">Editing <b>${esc(state.editingId)}</b>. ${state.savedTotal != null ? `Saved total was ${money(state.savedTotal)}${diff ? `; with today's rates and your changes it is ${money(r.total)}.` : '.'}` : ''}</div>`; })() : '';
@@ -340,9 +387,9 @@
     const saveBtns = state.editingId ? `<button class="btn primary" data-act="save-calc">Update ${esc(state.editingId)}</button><button class="btn" data-act="save-new">Save as new</button>` : `<button class="btn primary" data-act="save-new">Save calculation</button>`;
     return `<div class="sheetwrap"><i class="cm tl"></i><i class="cm tr"></i><i class="cm bl"></i><i class="cm br"></i><div class="sheet">
         <div class="lbl">Total production cost</div><div class="big"><small>${esc(cur())}</small>${U.m(r.total)}</div>
-        <div class="two"><div><div class="lbl">Quantity</div><div class="v">${U.f(r.qty)}</div></div><div><div class="lbl">Cost per piece</div><div class="v">${perPieceFmt(r.perPiece)}</div></div></div>
+        <div class="two"><div><div class="lbl">${j.product === 'NCR' ? 'Complete sets' : 'Quantity'}</div><div class="v">${U.f(r.qty)}</div></div><div><div class="lbl">${j.product === 'NCR' ? 'Cost per set' : 'Cost per piece'}</div><div class="v">${perPieceFmt(r.perPiece)}</div></div></div>
         <div class="strip"><i></i><i></i><i></i><i></i></div></div></div>
-      <div class="saveline">${saveBtns}</div>${editBanner}${warn}
+      <div class="saveline">${saveBtns}</div>${editBanner}${warn}${j.product === 'NCR' ? `<div class="notice info">${r.summary.ncrParts} parts per set${r.summary.pads ? ` · ${r.summary.pads} pads/books · average ${money(r.total / r.summary.pads)} per pad/book${r.qty % num(j.setsPerPad) ? ' (last pad is partial)' : ''}` : ''}</div>` : ''}${materialRequirementsHTML(r)}
       <section class="card"><h3>What the job needs</h3><div class="figure">${r.layout.kind === 'sheet' ? sheetSVG(r.layout) : rollSVG(r.layout)}${requirementHTML(r)}</div></section>
       <section class="card"><h3>Cost breakdown <small>${esc(j.name || 'Untitled job')}</small></h3>${breakdownHTML(r)}</section>
       <section class="card"><h3>How the total is built</h3>${formulaHTML(r)}</section>`;
@@ -351,7 +398,7 @@
     const map = {};
     r.errors.forEach((e) => { if (e.field && !map[e.field]) map[e.field] = e.msg; });
     $$('[data-err]').forEach((el) => { el.textContent = map[el.dataset.err] || ''; });
-    $$('[data-k]').forEach((el) => { if (map[el.dataset.k]) el.setAttribute('aria-invalid', 'true'); else el.removeAttribute('aria-invalid'); });
+    $$('[data-k]').forEach((el) => { if (map[el.dataset.k]) { el.setAttribute('aria-invalid', 'true'); let parent = el.parentElement; while (parent) { if (parent.tagName === 'DETAILS') parent.open = true; parent = parent.parentElement; } } else el.removeAttribute('aria-invalid'); });
   }
   function paintCompare() {
     const box = $('#cmptable'); if (!box) return;
@@ -396,10 +443,12 @@
       good_units: q.good, waste_units: q.waste, total_units: q.total, unit_cost: q.perUnit,
       line_cost: r.lines.material[0].amount + (wasteLine ? wasteLine.amount : 0)
     }];
-    (job.addMaterials || []).forEach((row, i) => {
-      const mm = find(DBnow.materials, row.materialId); if (!mm) return;
-      const line = r.lines.material[i + 1];
-      materials.push({ material_id: mm.id, role: 'other', material_name: mm.name, layout_kind: null, orientation: null, good_units: num(row.qty), waste_units: 0, total_units: num(row.qty), unit_cost: E.matBasis(mm).cost || 0, line_cost: line ? line.amount : 0 });
+    (r.materialRequirements || []).filter(x => x.index >= 0).forEach(x => {
+      const L = x.layout;
+      materials.push({ material_id: x.materialId, role: 'other', material_name: x.name, layout_kind: L ? L.kind : null,
+        orientation: L ? L.orientation : null, press_width_mm: L && L.kind === 'sheet' ? L.sheetW : null, press_height_mm: L && L.kind === 'sheet' ? L.sheetH : null,
+        pieces_across: L ? L.across : null, pieces_per_sheet: L && L.kind === 'sheet' ? L.ups : null, rows_along_roll: L && L.kind === 'roll' ? L.rows : null,
+        good_units: x.good, waste_units: x.waste, total_units: x.total, unit_cost: x.unitCost, line_cost: x.cost });
     });
     const printing = { machine_id: find(DBnow.machines, job.machineId).id, machine_name: find(DBnow.machines, job.machineId).name, method: r.summary.costing,
       colours: r.summary.printing.colours || null, plates: r.summary.printing.plates || null, plate_cost: r.summary.printing.plateCost || null, ink_rate: r.summary.printing.inkRate || null,
@@ -496,7 +545,7 @@
         n('sheetW', 'Sheet width (mm)'), n('sheetH', 'Sheet height (mm)'), n('rollWidth', 'Roll width (mm)'), n('rollLength', 'Roll length (m)', { hint: 'Needed for “per roll” pricing' }),
         { k: 'unit', label: 'Purchase cost is', type: 'select', options: Object.keys(E.MAT_UNITS).map((k) => [k, E.MAT_UNITS[k]]), r: 1 },
         un === 'pack' ? n('packSize', 'Sheets per pack') : null,
-        n('purchaseCost', `Purchase cost (${cur()})`, { req: 1 }), n('minCharge', `Minimum charge (${cur()})`),
+        n('purchaseCost', `Price per ${({sheet:'sheet',pack:'pack',roll:'roll',meter:'metre',sqm:'m²',kg:'kg',litre:'litre',piece:'piece'})[un] || 'purchase unit'} (${cur()})`, { req: 1, hint: 'Enter the price of ONE purchase unit, not the invoice total.' }), n('minCharge', `Minimum charge (${cur()})`),
         { k: 'supplier', label: 'Supplier', type: 'text' }, { k: 'notes', label: 'Notes', type: 'text', cls: 'span2' }
       ].filter(Boolean);
     }
@@ -523,7 +572,7 @@
     if (key === 'materials') {
       const p = (k) => num(d[k]);
       if (d.unit === 'sheet' || d.unit === 'pack') { if (!(p('sheetW') > 0)) errs.sheetW = 'Sheet width is needed.'; if (!(p('sheetH') > 0)) errs.sheetH = 'Sheet height is needed.'; }
-      if (d.unit === 'pack' && !(p('packSize') >= 1)) errs.packSize = 'Enter sheets per pack (1 or more).';
+      if (d.unit === 'pack' && !(Number.isInteger(p('packSize')) && p('packSize') >= 1)) errs.packSize = 'Enter a whole number of sheets per pack (1 or more).';
       if ((d.unit === 'meter' || d.unit === 'roll') && !(p('rollWidth') > 0)) errs.rollWidth = 'Roll width is needed.';
       if (d.unit === 'roll' && !(p('rollLength') > 0)) errs.rollLength = 'Roll length is needed to get cost per meter.';
       if (d.unit === 'sqm' && !(p('rollWidth') > 0) && !(p('sheetW') > 0 && p('sheetH') > 0)) errs.rollWidth = 'Enter a roll width or a sheet size.';
@@ -619,12 +668,79 @@
   function quickTable(key, cols) {
     return `<div class="tscroll"><table class="tbl tight"><thead><tr><th>${key === 'labor' ? 'Labor category' : 'Name'}</th>${cols.map((c) => `<th class="n">${c[1]}</th>`).join('')}</tr></thead><tbody>${DB[key].map((r) => `<tr><td>${esc(r.name || r.category)}${demoTag(r)}</td>${cols.map((c) => `<td class="n" style="width:130px"><input type="number" step="any" data-q2="${key}.${r.id}.${c[0]}" value="${esc(r[c[0]])}"${canEdit() ? '' : ' disabled'} aria-label="${esc(c[1])}"></td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   }
+  const NCR_INVOICE = [
+    {key:'cb_white',stock:'CB White',name:'JH NCR CB WHITE 55GSM 70*100',gsm:55,packs:5,price:230},
+    {key:'cfb_pink',stock:'CFB Pink',name:'JH NCR CFB PINK 50GSM 70*100',gsm:50,packs:4,price:240},
+    {key:'cf_yellow',stock:'CF Yellow',name:'JH NCR CF YELLOW 55GSM 70*100',gsm:55,packs:10,price:210}
+  ];
+  const invoiceTargets = {};
+  let invoiceBusy = false, invoiceStatus = '';
+  const invoiceStockName = name => String(name || '').toLowerCase().replace(/70\s*[*x×]\s*100/g,'').replace(/\b(?:50|55)\s*gsm\b/g,'').replace(/\b(?:jh|ncr)\b/g,'').replace(/[^a-z]/g,'');
+  function invoiceCandidates(item) {
+    return DB.materials.filter(m => {
+      const sameName = invoiceStockName(m.name) === invoiceStockName(item.stock);
+      const weight = String(m.gsm || '').match(/\d+/);
+      const sizeKnown = num(m.sheetW) > 0 && num(m.sheetH) > 0;
+      const sameSize = !sizeKnown || (num(m.sheetW) === 700 && num(m.sheetH) === 1000) || (num(m.sheetW) === 1000 && num(m.sheetH) === 700);
+      return sameName && sameSize && (!weight || Number(weight[0]) === item.gsm) && !m.demo;
+    });
+  }
+  function invoiceCard() {
+    if (!canEdit()) return '';
+    NCR_INVOICE.forEach(item => {
+      if (!Object.prototype.hasOwnProperty.call(invoiceTargets,item.key)) {
+        const candidates = invoiceCandidates(item);
+        invoiceTargets[item.key] = candidates.length === 1 ? candidates[0].id : candidates.length ? '' : '__new__';
+      }
+    });
+    return `<section class="card" id="ncr-invoice"><h3>Confirmed NCR purchase invoice</h3><p class="hint section-intro">70 × 100 cm · 500 sheets per pack · prices before VAT. Choose the record to update for each stock. A missing stock can be added from this invoice.</p><div class="tscroll"><table class="tbl"><thead><tr><th>Stock</th><th>Material record</th><th>Packs bought</th><th>AED / pack</th><th>AED / sheet</th></tr></thead><tbody>${NCR_INVOICE.map(item => {
+      const candidates = invoiceCandidates(item);
+      if (invoiceTargets[item.key] === '__new__' && candidates.length) invoiceTargets[item.key] = candidates.length === 1 ? candidates[0].id : '';
+      const choices = [['','Choose matching stock'],...candidates.map(m=>[m.id,m.name]),...(candidates.length ? [] : [['__new__','Add this invoice stock']])];
+      return `<tr><td>${esc(item.stock)} ${item.gsm}gsm</td><td><select data-invoice-target="${item.key}" aria-label="Material record for ${esc(item.stock)}"${invoiceBusy ? ' disabled' : ''}>${choices.map(o=>opt(o[0],o[1],invoiceTargets[item.key])).join('')}</select></td><td>${item.packs}</td><td>${U.m(item.price)}</td><td>${U.m(item.price / 500)}</td></tr>`;
+    }).join('')}</tbody></table></div><div class="material-actions"><button class="btn primary" data-act="apply-ncr-invoice"${invoiceBusy || cur() !== 'AED' ? ' disabled' : ''}>${invoiceBusy ? 'Saving invoice prices…' : 'Apply invoice prices'}</button></div><p class="hint">Updates purchase unit, pack size, sheet size, GSM and purchase price. Other materials and saved calculation history stay as they are.${cur() !== 'AED' ? ' These prices are in AED; set the app currency to AED before applying.' : ''}</p>${invoiceStatus ? `<p class="notice info" style="margin-top:12px">${esc(invoiceStatus)}</p>` : ''}</section>`;
+  }
+  async function applyNcrInvoice() {
+    if (!canEdit() || cur() !== 'AED' || invoiceBusy) return;
+    const plan = NCR_INVOICE.map(item => ({item,target:invoiceTargets[item.key]}));
+    if (plan.some(p => !p.target || (p.target === '__new__' && invoiceCandidates(p.item).length > 0) || (p.target !== '__new__' && !invoiceCandidates(p.item).some(m=>m.id === p.target)))) {
+      invoiceStatus = 'Choose a matching material for each stock, or choose Add this invoice stock.'; render(); return;
+    }
+    invoiceBusy = true; invoiceStatus = ''; render();
+    let saved = 0;
+    try {
+      for (const {item,target} of plan) {
+        const existing = target === '__new__' ? null : find(DB.materials,target);
+        const note = `Confirmed invoice: ${item.packs} packs × AED ${item.price}; 500 sheets per pack; 70 × 100 cm. Purchase price excludes the invoice's 5% VAT.`;
+        const notes = existing && existing.notes ? existing.notes + (existing.notes.includes(note) ? '' : '\n' + note) : note;
+        const values = {category:'Paper',gsm_thickness:`${item.gsm} gsm`,sheet_width_mm:700,sheet_height_mm:1000,roll_width_mm:null,roll_length_m:null,unit:'pack',pack_size:500,purchase_cost:item.price,notes,is_demo:false};
+        let result;
+        if (existing) result = await sb.from('materials').update(values).eq('id',existing.id).select('*').single();
+        else result = await sb.from('materials').insert(Object.assign({id:uuid(),name:item.name,min_charge:0},values)).select('*').single();
+        if (result.error) throw result.error;
+        if (!result.data) throw new Error('The database did not return the saved material.');
+        const record = fromRow('materials',result.data);
+        const i = DB.materials.findIndex(m=>m.id === record.id);
+        if (i < 0) DB.materials.push(record); else DB.materials[i] = record;
+        const j = lastSynced.materials.findIndex(m=>m.id === record.id);
+        if (j < 0) lastSynced.materials.push(clone(record)); else lastSynced.materials[j] = clone(record);
+        invoiceTargets[item.key] = record.id;
+        saved++;
+      }
+      invoiceStatus = 'Invoice prices saved: White AED 0.46, Pink AED 0.48 and Yellow AED 0.42 per sheet. New and recalculated jobs use these rates.';
+      toast('All three NCR invoice prices saved.');
+    } catch (e) {
+      invoiceStatus = `${saved} of 3 materials saved. ${friendlyDbError(e)} Retry to finish the remaining updates.`;
+      toast(invoiceStatus,'warn');
+    } finally { invoiceBusy = false; render(); }
+  }
+
   function viewSettings() {
     const dis = canEdit() ? '' : ' disabled';
     const wr = Object.keys(E.MODES).map((k) => `<tr><td>${E.MODES[k]}</td><td class="n"><input type="number" step="any" data-s="waste.${k}.pct" value="${esc(DB.settings.waste[k].pct)}"${dis}></td><td class="n"><input type="number" step="any" data-s="waste.${k}.setup" value="${esc(DB.settings.waste[k].setup)}"${dis}></td><td class="n"><input type="number" step="any" data-s="waste.${k}.min" value="${esc(DB.settings.waste[k].min)}"${dis}></td></tr>`).join('');
     const sh = Object.keys(E.MODES).map((k) => `<label class="f"><span>${E.MODES[k].split(' (')[0]}</span><input data-s="printing.setupHours.${k}" type="number" step="any" value="${esc(DB.settings.printing.setupHours[k])}"${dis}></label>`).join('');
     const demoCount = ['materials', 'machines', 'finishing', 'labor'].reduce((a, k) => a + DB[k].filter((r) => r.demo).length, 0);
-    return head('Settings', 'Everything the calculator uses lives here or in the rate databases, shared by your whole team. Nothing is hard-coded.')
+    return head('Settings', 'Production rates are editable here and in the material, machine and finishing databases, shared by your whole team.')
       + lockBanner()
       + `<section class="card"><h3>Account</h3><dl class="kv"><dt>Signed in as</dt><dd>${esc(profile.displayName)} (${esc(session.user.email)})</dd><dt>Role</dt><dd>${profile.role === 'admin' ? 'Admin — can edit rates' : 'Staff — can calculate and save, not edit rates'}</dd></dl><div class="actions"><button class="btn" data-act="sign-out">Sign out</button></div></section>
         <section class="card"><h3>Currency &amp; display</h3><div class="grid"><label class="f"><span>Currency</span><input data-s="currency" type="text" maxlength="6" value="${esc(DB.settings.currency)}"${dis}></label>
@@ -636,7 +752,7 @@
         <section class="card"><h3>Minimum charges <small>used when a material or operation has none of its own</small></h3><div class="grid">${sIn('minimums.material', `Minimum material charge per line (${cur()})`)}${sIn('minimums.finishing', `Minimum finishing charge per operation (${cur()})`)}</div></section>
         <section class="card"><h3>Machine rates</h3>${quickTable('machines', [['hourlyRate', 'Hourly rate'], ['setupRate', 'Setup rate'], ['speed', 'Speed']])}<p class="hint">Setup rate empty = same as hourly rate. Other machine fields are in Machines.</p></section>
         <section class="card"><h3>Labor rates</h3>${quickTable('labor', [['hourlyCost', 'Hourly cost']])}</section>
-        <section class="card" id="matcosts"><h3>Material costs</h3>${quickTable('materials', [['sheetW', 'Sheet W (mm)'], ['sheetH', 'Sheet H (mm)'], ['rollWidth', 'Roll W (mm)'], ['purchaseCost', 'Purchase cost'], ['minCharge', 'Min. charge']])}<p class="hint">Purchase cost is per the material's unit (per sheet unless you changed it in Materials → Edit — e.g. per pack, per meter, per m²). Sheets need width and height; rolls need roll width.</p></section>
+        ${invoiceCard()}<section class="card" id="matcosts"><h3>Material costs</h3>${quickTable('materials', [['sheetW', 'Sheet W (mm)'], ['sheetH', 'Sheet H (mm)'], ['rollWidth', 'Roll W (mm)'], ['purchaseCost', 'Purchase cost'], ['minCharge', 'Min. charge']])}<p class="hint">Purchase cost is per the material's unit (per sheet unless you changed it in Materials → Edit — e.g. per pack, per meter, per m²). Sheets need width and height; rolls need roll width.</p></section>
         <section class="card"><h3>Finishing rates</h3>${quickTable('finishing', [['rate', 'Rate'], ['setupCost', 'Setup cost'], ['minCharge', 'Min. charge']])}</section>
         ${canEdit() ? teamCard() : ''}
         <section class="card"><h3>Data</h3><p class="hint" style="margin-top:0">Materials, machines, finishing and labor are shared by everyone signed in — an edit here is visible to your whole team immediately.</p>
@@ -688,7 +804,9 @@
     if (!session) { document.querySelector('.app').style.display = 'none'; $('#authroot').innerHTML = viewAuth(); $('#authroot').style.display = ''; return; }
     document.querySelector('.app').style.display = ''; $('#authroot').style.display = 'none'; $('#authroot').innerHTML = '';
     renderNav();
+    const panels = {}; $$('details[data-panel]', $('#view')).forEach(el => { panels[el.dataset.panel] = el.open; });
     $('#view').innerHTML = VIEWS[state.view]();
+    $$('details[data-panel]', $('#view')).forEach(el => { if (Object.prototype.hasOwnProperty.call(panels, el.dataset.panel)) el.open = panels[el.dataset.panel]; });
     if (state.view === 'calc') recalc();
     if (state.view === 'settings' && canEdit()) loadTeam();
   }
@@ -736,12 +854,17 @@
     const t = e.target.closest('[data-act]'); if (!t) return;
     const a = t.dataset.act, d = t.dataset;
     switch (a) {
+      case 'apply-ncr-invoice': syncChain = syncChain.then(applyNcrInvoice, applyNcrInvoice); await syncChain; break;
       case 'close': closeModal(); break;
       case 'sign-out': await sb.auth.signOut(); break;
       case 'new-job': state.job = freshJob(); state.editingId = null; state.editingUuid = null; state.savedTotal = null; render(); break;
+      case 'add-material-role': {
+        state.job.addMaterials.push({ role: d.role, feed: 'web', materialId: '', qty: '', wastePct: '', setupWaste: '', printed: true, sides: '', colors: '', colorMode: '', finId: '', opQty: '', scales: false });
+        render(); break;
+      }
       case 'add': {
         const rows = state.job[d.list];
-        rows.push({ finishing: { finId: '', qty: '', mult: 1, scales: false }, labor: { laborId: '', hours: '', scales: false }, addMaterials: { materialId: '', qty: 1, scales: false }, other: { desc: '', qty: 1, unitCost: '', scales: false } }[d.list]);
+        rows.push({ finishing: { finId: '', qty: '', mult: 1, scales: false }, labor: { laborId: '', hours: '', scales: false }, addMaterials: { role: 'manual', materialId: '', qty: 1, scales: false }, other: { desc: '', qty: 1, unitCost: '', scales: false } }[d.list]);
         render(); break;
       }
       case 'del': state.job[d.list].splice(Number(d.i), 1); render(); break;
@@ -800,6 +923,7 @@
 
   function onField(e) {
     const t = e.target;
+    if (t.dataset.invoiceTarget) { invoiceTargets[t.dataset.invoiceTarget] = t.value; return; }
     if (t.id === 'cmpq') { state.cmp = t.value; paintCompare(); return; }
     if (t.dataset.q) { state.q[t.dataset.q] = t.value; const rs = t.dataset.q === 'saved' ? savedRows() : crudRows(t.dataset.q); $('#crudbody').innerHTML = rs.html; $('#crudcount').textContent = rs.count; return; }
     if (t.dataset.d && modalCtx && modalCtx.kind === 'form') {
@@ -828,7 +952,8 @@
       const k = t.dataset.k, v = t.type === 'checkbox' ? t.checked : t.value;
       setPath(state.job, k, v);
       if (e.type === 'change' && t.dataset.r) {
-        if (k === 'product') { const pm = PRODUCT_MODE[v]; if (pm) state.job.mode = pm; else if (state.job.mode !== 'offset' && state.job.mode !== 'digital') state.job.mode = 'digital'; if (E.BOOK.includes(v)) state.job.sides = 2; autoPick(state.job); }
+        if (k === 'product') { const pm = PRODUCT_MODE[v]; if (pm) state.job.mode = pm; else if (state.job.mode !== 'offset' && state.job.mode !== 'digital') state.job.mode = 'digital'; if (E.BOOK.includes(v)) state.job.sides = 2; if (v === 'NCR' && !state.job.addMaterials.some(r => r.role === 'ncr')) state.job.addMaterials.push({role: 'ncr', materialId: '', qty: '', printed: true, sides: '', colors: '', colorMode: '', wastePct: '', setupWaste: '', finId: '', opQty: '', scales: false}); autoPick(state.job); }
+        if (/^addMaterials\.\d+\.role$/.test(k)) { const row = state.job.addMaterials[Number(k.split('.')[1])]; row.qty = v === 'manual' ? 1 : ''; row.printed = true; row.wastePct = ''; row.setupWaste = ''; }
         if (k === 'mode') { autoPick(state.job); if (v !== 'sticker') { state.job.shape = 'rect'; state.job.cutFinId = ''; state.job.lamFinId = ''; } }
         render();
       } else if (e.type === 'input' || e.type === 'change') recalc();

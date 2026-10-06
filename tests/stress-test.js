@@ -1,4 +1,4 @@
-const E = require('./engine.js'), Seed = require('./seed.js');
+const E = require(require('fs').existsSync(require('path').join(__dirname, '../src/engine.js')) ? '../src/engine.js' : './engine.js'), Seed = require(require('fs').existsSync(require('path').join(__dirname, '../src/seed.js')) ? '../src/seed.js' : './seed.js');
 const db = Seed.build();
 let seed = 12345; const rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
 const pick = (a) => a[Math.floor(rnd() * a.length)];

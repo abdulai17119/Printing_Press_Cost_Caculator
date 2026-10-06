@@ -192,3 +192,29 @@ details.adv summary{cursor:pointer;color:var(--cyan);font-weight:600;font-size:1
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 
 .need{display:inline-block;background:var(--mag-soft);color:var(--magenta);border:1px solid var(--magenta);font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;white-space:nowrap}
+
+/* Unified job materials */
+.section-intro{margin:0 0 12px}
+.material-layer{padding:14px;border:1px solid var(--line);border-radius:6px;background:var(--paper);margin-top:12px;min-width:0}
+.material-layer h4{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:14px;margin:0 0 12px}
+.main-material{border-left:3px solid var(--cyan)}
+.material-list{gap:0}
+.material-actions{display:flex;flex-wrap:wrap;gap:8px;padding-top:14px}
+#job-materials>details{padding:10px 14px;background:var(--paper);border:1px solid var(--line-soft);border-radius:4px}
+details[data-panel] summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px;list-style:none}
+details[data-panel] summary:before{content:'+';font-size:16px;width:14px;flex:0 0 14px}
+details[data-panel][open] summary:before{content:'−'}
+details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--muted);margin-left:auto}
+@media(max-width:600px){
+  .grid,.grid.g2{grid-template-columns:minmax(0,1fr)}
+  .span2{grid-column:auto}
+  .card{padding:14px 12px}
+  .material-layer{padding:12px 10px}
+  .material-actions .btn{flex:1 1 140px}
+  .chk{white-space:normal}
+}
+
+/* Show purchase-unit conversions beside selected stocks. */
+.material-price{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px 16px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--cyan);background:var(--card);border-radius:4px;font-size:13px;overflow-wrap:anywhere}
+.price-caption{display:block;color:var(--muted);font-size:11.5px;margin-bottom:3px}
+.material-price .lnk{font-size:12px;white-space:nowrap}

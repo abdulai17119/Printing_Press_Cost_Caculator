@@ -1,5 +1,5 @@
-const E = require('./engine.js');
-const Seed = require('./seed.js');
+const E = require(require('fs').existsSync(require('path').join(__dirname, '../src/engine.js')) ? '../src/engine.js' : './engine.js');
+const Seed = require(require('fs').existsSync(require('path').join(__dirname, '../src/seed.js')) ? '../src/seed.js' : './seed.js');
 let pass = 0, fail = 0;
 const ok = (name, cond, extra) => { if (cond) pass++; else { fail++; console.log('  ✗ FAIL:', name, extra !== undefined ? '→ ' + JSON.stringify(extra) : ''); } };
 const near = (name, a, b, tol = 0.011) => ok(name, Math.abs(a - b) <= tol, { got: a, expected: b });

@@ -1,4 +1,4 @@
-const Seed = require('../seed.js');
+const Seed = require(require('fs').existsSync(require('path').join(__dirname, '../src/seed.js')) ? '../src/seed.js' : './seed.js');
 const db = Seed.build();
 function toRow(map, obj) { const o = {}; map.forEach(([k,j]) => { let v = obj[j||k]; if (v==='' || v===undefined) v=null; o[k]=v; }); return o; }
 const M = {
