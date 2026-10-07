@@ -229,6 +229,44 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 .material-price{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px 16px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--cyan);background:var(--card);border-radius:4px;font-size:13px;overflow-wrap:anywhere}
 .price-caption{display:block;color:var(--muted);font-size:11.5px;margin-bottom:3px}
 .material-price .lnk{font-size:12px;white-space:nowrap}
+
+/* Guided NCR job flow */
+.ncr-flow .grid.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ncr-flow .col-form > .card{border-radius:12px;padding:22px;margin-bottom:18px}
+.step-title{display:flex;align-items:center;gap:10px;font-size:16px}
+.step-title i{font-style:normal;background:var(--cyan-soft);color:var(--cyan);width:28px;height:28px;border-radius:50%;display:inline-grid;place-items:center;font-size:13px;flex:none}
+.field-caption{display:block;font-size:13px;font-weight:600;margin-bottom:8px;color:var(--muted)}
+.format-choices{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.format-choice{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:13px 8px;cursor:pointer;text-align:left;min-height:76px}
+.format-choice b{display:block;font-size:20px;font-family:var(--f-display)}
+.format-choice span{display:block;font-size:11px;color:var(--muted);margin-top:4px}
+.format-choice[aria-pressed="true"]{border:2px solid var(--cyan);background:var(--cyan-soft);padding:12px 7px;color:var(--cyan)}
+.format-choice:hover{border-color:var(--cyan)}
+.ncr-format>small{display:block;color:var(--muted);font-size:12px;margin-top:9px}
+.custom-copies{max-width:260px;margin-top:12px}
+.machine-overview{padding:12px 14px;background:var(--cyan-soft);border-radius:8px;margin-top:12px;display:grid;gap:3px}
+.machine-overview span,.machine-overview small{color:var(--muted);font-size:12px}
+.ncr-flow .material-layer{background:var(--card);border-radius:10px;border-left:3px solid var(--cyan);padding:16px}
+.ncr-flow .main-material{border-left-color:var(--magenta)}
+.printing-caption{font-size:13px;font-weight:600;padding-top:8px;border-top:1px solid var(--line-soft)}
+.printing-caption small{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:3px}
+.copy-settings>small{display:block;color:var(--muted);margin-top:8px;font-size:12px}
+.ncr-flow details.adv>div.grid{margin-top:12px}
+.ncr-extras>summary{cursor:pointer;font-weight:600;display:flex;justify-content:space-between;gap:12px}
+.ncr-extras>summary span{color:var(--muted);font-size:12px;font-weight:400}
+.ncr-extras>section{margin-top:16px}
+#ncr-count-summary{font-size:13px;line-height:1.7;border-radius:8px}
+@media(max-width:600px){
+  .ncr-flow .col-form > .card{padding:16px 12px}
+  .format-choices{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ncr-flow .grid.g2{grid-template-columns:minmax(0,1fr)}
+  .ncr-flow .span2{grid-column:1}
+  .ncr-flow .material-layer{padding:12px}
+}
+
+.extra-stocks{margin:0!important;flex:1;min-width:180px}
+.extra-stocks summary{padding:7px 0}
+.ncr-flow input:not([type="checkbox"]),.ncr-flow select,.ncr-flow textarea{min-width:0;width:100%}
 </style>
 </head>
 <body>
@@ -1062,7 +1100,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   const eqIgnoring = (a, b, ignore) => { const strip = (o) => { const c = clone(o); (ignore || []).forEach((k) => delete c[k]); return c; }; return JSON.stringify(strip(a)) === JSON.stringify(strip(b)); };
 
   /* ================= state ================= */
-  let DB = null, lastSynced = null, session = null, profile = null;
+  let DB = null, lastSynced = null, session = null, profile = null, renderedJob = null;
   const state = { view: 'calc', job: null, editingId: null, editingUuid: null, savedTotal: null, cmp: '500, 1000, 2000, 5000', q: {}, result: null, needsOnly: false, auth: { mode: 'signin', busy: false, error: '', notice: '' } };
   const canEdit = () => profile && profile.role === 'admin';
   const cur = () => (DB && DB.settings.currency) || 'AED';
@@ -1244,6 +1282,31 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       : Math.abs(num(j.w) * factor - p[2]) < .001 && Math.abs(num(j.h) * factor - p[3]) < .001);
     return match ? match[0] : 'custom';
   }
+  const blankNcrCopy = () => ({role:'ncr',materialId:'',qty:'',printed:true,sides:'',colors:'',colorMode:'',plates:'',setupHours:'',wastePct:'',setupWaste:'',finId:'',opQty:'',scales:false});
+  function resizeNcrCopies(count) {
+    const j = state.job, copies = j.addMaterials.filter(r => r.role === 'ncr');
+    const archive = j.ncrCopyArchive || [];
+    copies.forEach((r,i) => { archive[i] = clone(r); });
+    j.ncrCopyArchive = archive;
+    j.ncrRequestedCopies = count;
+    j.addMaterials = Array.from({length:count},(_,i) => clone(copies[i] || archive[i] || blankNcrCopy()))
+      .concat(j.addMaterials.filter(r => r.role !== 'ncr'));
+  }
+  function ncrFormatHTML(j) {
+    const count = j.addMaterials.filter(r => r.role === 'ncr').length;
+    const selected = j.ncrFormat === 'custom' || ![1,2,3].includes(count) ? 'custom' : String(count);
+    return `<div class="span2 ncr-format"><span class="field-caption">NCR format</span><div class="format-choices" role="group" aria-label="NCR format">${[1,2,3,'custom'].map(n => `<button type="button" class="format-choice" data-act="ncr-format" data-format="${n}" aria-pressed="${selected === String(n)}"><b>${n === 'custom' ? 'Custom' : '1 + ' + n}</b><span>${n === 'custom' ? 'Choose copy count' : `${Number(n)+1} parts per set`}</span></button>`).join('')}</div>${selected === 'custom' ? `<label class="f custom-copies"><span>Copies after the original</span><input id="ncr-copy-count" data-k="ncrRequestedCopies" aria-describedby="ncr-copy-error" type="number" min="1" max="99" step="1" value="${esc(j.ncrRequestedCopies == null ? count : j.ncrRequestedCopies)}"><small>1 original + your chosen number of copies.</small><i class="err" id="ncr-copy-error" data-err="ncrRequestedCopies"></i></label>` : ''}<small>Material cards appear automatically. Reducing the format keeps removed copies for restoring in this job.</small></div>`;
+  }
+  function ncrCopySettingsHTML(k,r,costing,i) {
+    const modified = ['sides','colors','colorMode','plates','setupHours'].some(key => !isBlank(r[key]));
+    return F.chk(k + '.printed','Print this copy')
+      + `<details class="adv span2 copy-settings" data-panel="copy-${i}-printing"${modified ? ' open' : ''}><summary>${modified ? 'Different printing settings' : 'Different settings for this copy'} <span>${modified ? 'Overrides active' : 'Same as original'}</span></summary><div class="grid g2">`
+      + F.sel(k + '.sides','Printed sides',[['','Same as original'],['1','1 side'],['2','2 sides']])
+      + (costing === 'offset' ? F.num(k + '.colors','Offset colours',{ph:'same as original'}) + F.num(k + '.plates','New plates for this copy',{ph:'auto',hint:'Enter 0 to reuse existing plates. Blank calculates a new plate set.'}) : F.sel(k + '.colorMode','Digital colour mode',[['','Same as original'],['color','Colour'],['bw','Black & white']]))
+      + F.num(k + '.setupHours','Stock-change setup hours',{ph:'same as original',hint:'Enter 0 only if this setup is already included.'})
+      + `</div><button type="button" class="lnk" data-act="reset-copy-printing" data-i="${i}">Use original printing settings</button><small>Inherited settings include a new plate set and setup for each printed copy unless overridden.</small></details>`;
+  }
+
   function ncrQuantityHTML(j) {
     const books = j.ncrQuantityMode === 'books';
     return F.sel('ncrQuantityMode', 'Enter quantity as', [['sets', 'Complete sets / serial numbers'], ['books', 'Books / pads']], {r: 1})
@@ -1283,7 +1346,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const tests = Seed.testJobs();
     const S = DB.settings, P = S.printing, WS = S.waste[j.mode] || { pct: 0, setup: 0, min: 0 };
 
-    const jobCard = `<section class="card"><h3>1 · Job</h3><div class="grid">
+    let jobCard = `<section class="card"><h3>1 · Job</h3><div class="grid">
       ${F.txt('name', 'Job name', { cls: 'span2', ph: 'e.g. Menu cards for client job 1042' })}
       ${F.sel('product', 'Product type', E.PRODUCT_TYPES.map((p) => [p, p]), { r: 1 })}
       ${F.sel('mode', 'Printing method', Object.keys(E.MODES).map((k) => [k, E.MODES[k]]), { r: 1 })}
@@ -1300,10 +1363,14 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       <label class="f span2"><span>Notes</span><textarea data-k="notes" placeholder="Anything worth remembering about this job">${esc(j.notes)}</textarea></label>
     </div></section>`;
 
-    const matOpts = [['', '— choose material —']].concat(DB.materials.map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
+    const ncr = j.product === 'NCR';
+    if (ncr) jobCard = `<section class="card" id="job-details"><h3><span class="step-title"><i>1</i> Job &amp; NCR format</span></h3><div class="grid g2">${F.txt('name','Job name',{cls:'span2',ph:'e.g. A5 receipt books for client'})}${F.sel('product','Product type',E.PRODUCT_TYPES.map(p=>[p,p]),{r:1})}${F.sel('mode','Printing method',['offset','digital'].map(k=>[k,E.MODES[k]]),{r:1})}${ncrFormatHTML(j)}${sizePickerHTML(j)}${F.sel('unit','Size unit',[['mm','mm'],['cm','cm'],['m','meter']],{r:1})}${F.num('w',`Finished width (${U_})`)}${F.num('h',`Finished height (${U_})`)}</div><details class="adv" data-panel="ncr-job-advanced"><summary>More job options <span>Bleed, open size &amp; notes</span></summary><div class="grid g2">${F.num('bleed','Bleed (mm)',{ph:'3'})}${F.num('ow',`Open width (${U_})`,{hint:'Only for a folded form'})}${F.num('oh',`Open height (${U_})`)}<label class="f span2"><span>Notes</span><textarea data-k="notes">${esc(j.notes)}</textarea></label></div></details></section>`;
+    const quantityCard = ncr ? `<section class="card" id="ncr-quantity"><h3><span class="step-title"><i>4</i> Quantity</span><small>Books or complete sets</small></h3><div class="grid g2">${ncrQuantityHTML(j)}</div></section>` : '';
+
+    const matOpts = [['', '— choose material —']].concat(DB.materials.filter(m => !ncr || E.materialMode(m) === 'sheet' || m.id === j.materialId).map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
     const machOpts = [['', '— choose machine —']].concat(DB.machines.filter((m) => E.MODE_MACHINES[j.mode].includes(m.type)).map((m) => [m.id, m.name]));
     let layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · part 1' : 'Main printing material'}</h4><div class="grid g2">
-      ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1 })}${materialPriceHTML(mat)}
+      ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1, cls:ncr ? 'span2' : '' })}${materialPriceHTML(mat)}
       </div><details class="adv" data-panel="main-layout"><summary>Layout &amp; sheet cutting <span>${kind === 'roll' ? 'Roll' : 'Sheet'}</span></summary><div class="grid" style="margin-top:12px">
       ${kind === 'sheet' ? F.num('margin', 'Sheet margin, each edge (mm)', { hint: 'Not printable' }) + F.num('gripper', 'Gripper edge (mm)', { hint: 'Extra, one edge' }) : F.num('rollEdge', 'Roll edge margin, each side (mm)')}
       ${F.num('gutter', 'Gap between pieces (mm)')}
@@ -1323,11 +1390,15 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       printFields = F.num('inkSqm', `Ink cost per m² (${cur()})`, { ph: P.areaInkPerSqm }) + F.num('machineSqm', `Machine cost per m² (${cur()})`, { ph: mach ? mach.costPerSqm : '' })
         + F.num('setupHours', 'Setup time (hours)', { ph: P.setupHours[j.mode] }) + F.num('speed', 'Machine speed (m²/h)', { ph: mach ? mach.speed : '' });
     }
-    if (j.product === 'NCR') {
-      layoutCard = layoutCard.replace('</div><details', `<h5 class="span2">Original printing settings · ${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital' : 'Area based'}</h5>${F.sel('sides', 'Original printed sides', [['1', '1 side'], ['2', '2 sides']])}${printFields}<p class="hint span2">Copies use these settings unless overridden in their cards. The shared machine is selected in section 3.</p></div><details`);
+    if (ncr) {
+      const basic = F.sel('sides','Original printed sides',[['1','1 side'],['2','2 sides']]) + (costing === 'offset' ? F.num('colors','Printing colours',{ph:'1'}) : F.sel('colorMode','Colour or B&W',[['color','Colour'],['bw','Black & white']]));
+      const advanced = costing === 'offset'
+        ? F.num('plates','New plates for original',{ph:'auto'}) + F.num('plateCost',`Plate cost (${cur()})`,{ph:P.plateCost}) + F.num('inkRate',`Ink per 1,000 colour-sides (${cur()})`,{ph:P.offsetInkPer1000})
+        : F.num('clickColor',`Colour click (${cur()})`,{ph:mach ? mach.clickColor : ''}) + F.num('clickBW',`B&W click (${cur()})`,{ph:mach ? mach.clickBW : ''});
+      layoutCard = layoutCard.replace('</div><details', `<div class="span2 printing-caption">Shared printing settings <small>Copies inherit these unless overridden</small></div>${basic}</div><details class="adv" data-panel="original-printing"><summary>Printing rates &amp; setup <span>Advanced</span></summary><div class="grid g2">${advanced}${F.num('setupHours','Setup time (hours)',{ph:P.setupHours[j.mode]})}${F.num('speed','Machine speed (impr./h)',{ph:mach ? mach.speed : ''})}</div></details><details`);
     }
-    const printCard = `<section class="card"><h3>3 · Printing <small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid g2">${F.sel('machineId', 'Printing machine', machOpts, {r: 1})}${j.product === 'NCR' ? '' : printFields}</div>
-      <p class="hint">Empty boxes use the rate from the Machines database or Settings (shown in grey). Type a number to override it for this job only.</p></section>`;
+    const machineInfo = mach ? `<div class="machine-overview"><b>${esc(mach.name)}</b><span>${num(mach.maxSheetW) > 0 ? `${num(mach.maxSheetW)/10} × ${num(mach.maxSheetH)/10} cm sheet capacity · ` : ''}${mach.type === 'offset' ? `${num(mach.colorUnits) || '?'} colours per pass` : esc(E.MACHINE_TYPES[mach.type])}</span>${isBlank(mach.hourlyRate) || isBlank(mach.speed) ? '<small>Complete this machine’s rates and speed in Machines before costing.</small>' : ''}</div>` : '<p class="hint">Choose a machine to calculate printing and sheet layout.</p>';
+    const printCard = `<section class="card" id="job-machine"><h3>${ncr ? '<span class="step-title"><i>2</i> Printing machine</span>' : '3 · Printing'}<small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid g2">${F.sel('machineId','Printing machine',machOpts,{r:1,cls:ncr ? 'span2' : ''})}${ncr ? '' : printFields}</div>${ncr ? machineInfo : '<p class="hint">Empty boxes use the rate from Machines or Settings. Type a number to override it for this job.</p>'}</section>`;
 
     const wasteCard = `<details class="adv" data-panel="main-waste"><summary>Main material waste <span>Defaults: ${WS.pct}%</span></summary><div class="grid" style="margin-top:12px">
       ${F.num('wastePct', 'Waste %', { ph: WS.pct })}
@@ -1348,7 +1419,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         <button class="btn sm" data-act="del" data-list="finishing" data-i="${i}" aria-label="Remove operation">Remove</button></div>`;
     }).join('');
     const stickerFin = j.mode === 'sticker' ? `<div class="grid g2" style="margin-bottom:12px">${F.sel('cutFinId', 'Cutting method', [['', 'None']].concat(DB.finishing.map((f) => [f.id, f.name])), { r: 1 })}</div>` : '';
-    const finCard = `<section class="card"><h3>4 · Finishing <small>each stage is costed separately</small></h3>
+    const finCard = `<section class="card"><h3>${ncr ? '<span class="step-title"><i>5</i> Finishing</span>' : '4 · Finishing'} <small>each stage is costed separately</small></h3>
       <div class="chain">${chain.map((c, i) => (i ? '<i>→</i>' : '') + `<b>${esc(c)}</b>`).join('')}</div>${stickerFin}
       <div class="rows">${finRows || '<p class="hint" style="margin:0">No finishing operations added.</p>'}</div>
       <div style="margin-top:10px"><button class="btn sm" data-act="add" data-list="finishing">Add finishing operation</button></div>
@@ -1363,21 +1434,24 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       <div style="margin-top:10px"><button class="btn sm" data-act="add" data-list="labor">Add labor operation</button></div>
       <p class="hint">Machine setup time is already costed at the machine's setup rate. Add labor only for people-time that is not already inside a machine rate.</p></section>`;
 
-    const addMatOpts = [['', '— choose —']].concat(DB.materials.map((m) => [m.id, m.name]));
+    const addMatOpts = [['', '— choose —']].concat(DB.materials.map(m => [m.id,m.name]));
     const roles = [['manual', 'Other / manual quantity'], ['ncr', 'NCR copy layer'], ['lamination', 'Lamination film'], ['mounting', 'Mounting board'], ['cover', 'Cover / backing per pad']];
     const addRows = j.addMaterials.map((r, i) => {
 
       const mm = find(DB.materials, r.materialId), b = mm ? E.matBasis(mm) : null, k = `addMaterials.${i}`, role = r.role || 'manual';
       const op = find(DB.finishing, r.finId), auto = role !== 'manual';
+      const copyOpts = [['','— choose NCR stock —']].concat(DB.materials.filter(m => E.materialMode(m) === 'sheet' || m.id === r.materialId).map(m => [m.id,matLabel(m)]));
       const title = role === 'ncr' ? `Copy ${j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length} · part ${1 + j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length}` : (roles.find(x => x[0] === role) || roles[0])[1];
       return `<div class="material-layer" data-material-index="${i}"><h4>${esc(title)}<button class="btn sm" data-act="del" data-list="addMaterials" data-i="${i}" aria-label="Remove ${esc(title)}">Remove</button></h4><div class="grid g2">
-        ${F.sel(k + '.role', 'Purpose', roles, {r: 1})}
-        ${F.sel(k + '.materialId', 'Stock', addMatOpts, {r: 1})}${materialPriceHTML(mm)}
+        ${role === 'ncr' && ncr ? '' : F.sel(k + '.role', 'Purpose', roles, {r:1})}
+        ${F.sel(k + '.materialId',role === 'ncr' ? 'Copy NCR stock' : 'Stock',role === 'ncr' ? copyOpts : addMatOpts,{r:1,cls:role === 'ncr' ? 'span2' : ''})}${materialPriceHTML(mm)}
         ${!auto ? F.num(k + '.qty', `Quantity${b ? ' (' + b.label + ')' : ''}`, {ph: '1'}) : ''}
         ${role === 'lamination' ? F.sel(k + '.feed', 'Lamination method', [['web', 'Continuous printed roll (same length)'], ['pieces', 'Separate cut pieces (own layout)']], {r: 1, hint: 'Continuous requires film as wide as the printing roll. Separate pieces assumes you cut and rearrange them first.'}) : ''}
-        ${role === 'ncr' ? F.chk(k + '.printed', 'Print this copy') + F.sel(k + '.sides', 'Printed sides', [['', 'Same as original'], ['1', '1 side'], ['2', '2 sides']]) + (costing === 'offset' ? F.num(k + '.colors', 'Offset colours', {ph: 'same as original'}) + F.num(k + '.plates', 'Offset plates for this copy', {ph: 'auto', hint: 'Enter 0 if it reuses the original plates.'}) : F.sel(k + '.colorMode', 'Digital colour mode', [['', 'Same as original'], ['color', 'Colour'], ['bw', 'Black & white']])) + F.num(k + '.setupHours', 'Printing setup hours for this copy', {ph: 'same as original', hint: 'Enter the actual stock-change setup, or 0 if already included.'}) : ''}
+        ${role === 'ncr' ? ncrCopySettingsHTML(k,r,costing,i) : ''}
+        ${role === 'ncr' ? `<details class="adv span2" data-panel="copy-${i}-processing"${r.finId ? ' open' : ''}><summary>Processing for this copy <span>Optional</span></summary><div class="grid g2">` : ''}
         ${F.sel(k + '.finId', 'Processing operation (optional)', [['', 'None']].concat(DB.finishing.map(f => [f.id, f.name])), {r: 1})}
         ${r.finId ? F.num(k + '.opQty', op && op.method === 'per_hour' ? 'Processing hours' : 'Processing quantity override', {ph: 'auto', hint: 'Per m² uses finished area; per sheet uses good sheets; per metre uses roll length or sheet-piece perimeter.'}) : ''}
+        ${role === 'ncr' ? '</div></details>' : ''}
         </div><details class="adv" data-panel="material-${i}-quantity"><summary>${auto ? 'Quantity &amp; waste overrides' : 'Comparison options'} <span>${auto ? 'Automatic' : 'Manual'}</span></summary><div class="grid g2" style="margin-top:12px">
         ${auto ? F.num(k + '.qty', 'Good quantity override (sheet / metre)', {ph: 'auto', hint: 'Empty calculates from this material’s own size. Override is good press sheets or linear metres, before waste.'}) : ''}
         ${auto ? F.num(k + '.wastePct', 'Material waste %', {ph: role === 'ncr' ? 'job default' : '0'}) + F.num(k + '.setupWaste', 'Setup waste (sheet / metre)', {ph: role === 'ncr' ? 'job default' : '0'}) : ''}
@@ -1389,8 +1463,9 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         <label class="f"><span>Quantity</span><input type="number" step="any" data-k="other.${i}.qty" value="${esc(r.qty)}"><i class="err" data-err="other.${i}.qty"></i></label>
         <label class="f"><span>Unit cost (${cur()})</span><input type="number" step="any" data-k="other.${i}.unitCost" value="${esc(r.unitCost)}"><i class="err" data-err="other.${i}.unitCost"></i></label>
         ${F.chk(`other.${i}.scales`, 'Scales')}<button class="btn sm" data-act="del" data-list="other" data-i="${i}">Remove</button></div>`).join('');
-    const materialActions = `<div class="material-actions"><button class="btn sm" data-act="add" data-list="addMaterials">+ Add material</button>${j.product === 'NCR' ? '<button class="btn sm" data-act="add-material-role" data-role="ncr">+ NCR copy</button><button class="btn sm" data-act="add-material-role" data-role="cover">+ Cover / backing</button>' : '<button class="btn sm" data-act="add-material-role" data-role="lamination">+ Lamination film</button><button class="btn sm" data-act="add-material-role" data-role="mounting">+ Mounting board</button>'}</div>`;
-    const materialCard = `<section class="card" id="job-materials"><h3>2 · Materials <small>${1 + j.addMaterials.length} stocks</small></h3>
+    let materialActions = `<div class="material-actions"><button class="btn sm" data-act="add" data-list="addMaterials">+ Add material</button>${j.product === 'NCR' ? '<button class="btn sm" data-act="add-material-role" data-role="ncr">+ NCR copy</button><button class="btn sm" data-act="add-material-role" data-role="cover">+ Cover / backing</button>' : '<button class="btn sm" data-act="add-material-role" data-role="lamination">+ Lamination film</button><button class="btn sm" data-act="add-material-role" data-role="mounting">+ Mounting board</button>'}</div>`;
+    if (ncr) materialActions = `<div class="material-actions"><button class="btn sm" data-act="add-material-role" data-role="cover">+ Cover / backing</button><details class="adv extra-stocks" data-panel="ncr-extra-stocks"><summary>Other materials <span>Optional</span></summary><div class="material-actions"><button class="btn sm" data-act="add" data-list="addMaterials">+ Add material</button><button class="btn sm" data-act="add-material-role" data-role="ncr">+ Add one copy</button></div></details></div>`;
+    const materialCard = `<section class="card" id="job-materials"><h3>${ncr ? '<span class="step-title"><i>3</i> Materials &amp; printing</span>' : '2 · Materials'} <small>${1 + j.addMaterials.length} stocks</small></h3>
       <p class="hint section-intro">Choose every stock used in this job here. Add processing to film or board below its stock selection.</p>
       ${j.product === 'NCR' ? '<p class="hint">One original plus each copy makes a complete set. Copies use the main printing machine; adjust reused plates and stock-change setup as needed.</p>' : ''}
       ${materialActions}${layoutCard}${wasteCard}<div class="rows material-list">${addRows}</div>
@@ -1399,8 +1474,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const otherCard = `<section class="card" id="custom-costs"><h3>6 · Additional costs</h3><div class="rows">${othRows || '<p class="hint">Add any costs not covered above.</p>'}</div><div class="material-actions"><button class="btn sm" data-act="add" data-list="other">+ Add custom cost</button></div></section>`;
 
     const actions = `<label class="f" style="min-width:230px"><span>Load a demo test job</span><select id="loadtest"><option value="">— choose —</option>${tests.map((t, i) => `<option value="${i}">${esc(t.name)}</option>`).join('')}</select></label><button class="btn" data-act="new-job">Start new</button>`;
-    return head('New cost calculation', 'Enter the job. The production cost updates as you type.', actions)
-      + `<div class="calc"><div class="col-form">${jobCard}${materialCard}${printCard}${finCard}${laborCard}${otherCard}</div>
+    return head('New cost calculation', ncr ? 'Build your NCR job in five steps. Costs update as you work.' : 'Enter the job. The production cost updates as you type.', actions)
+      + `<div class="calc${ncr ? ' ncr-flow' : ''}"><div class="col-form">${ncr ? `${jobCard}${printCard}${materialCard}${quantityCard}${finCard}<details class="card ncr-extras" data-panel="ncr-extras"${j.labor.length || j.other.length ? ' open' : ''}><summary>Labour &amp; additional costs <span>Optional</span></summary>${laborCard}${otherCard}</details>` : `${jobCard}${materialCard}${printCard}${finCard}${laborCard}${otherCard}`}</div>
       <div class="col-res"><div id="results"></div>
         <section class="card" id="cmpcard"><h3>Compare quantities <small>uses the real calculation</small></h3>
           <label class="f"><span>Quantities (comma separated)</span><input id="cmpq" type="text" value="${esc(state.cmp)}"></label><div id="cmptable" style="margin-top:12px"></div></section></div></div>
@@ -1506,6 +1581,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     }
     const count = $('#ncr-count-summary'); if (count) count.innerHTML = ncrCountHTML(j);
     const r = E.calculate(state.job, DB);
+    if (j.product === 'NCR' && j.ncrFormat === 'custom' && j.ncrRequestedCopies != null && !(Number.isInteger(Number(j.ncrRequestedCopies)) && Number(j.ncrRequestedCopies) >= 1 && Number(j.ncrRequestedCopies) <= 99)) { r.ok = false; r.errors.push({field:'ncrRequestedCopies',msg:'Enter a whole number of copies from 1 to 99.'}); r.total = 0; r.perPiece = 0; }
     state.result = r;
     const box = $('#results'); if (!box) return;
     box.innerHTML = resultsHTML(r);
@@ -1933,7 +2009,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (!session) { document.querySelector('.app').style.display = 'none'; $('#authroot').innerHTML = viewAuth(); $('#authroot').style.display = ''; return; }
     document.querySelector('.app').style.display = ''; $('#authroot').style.display = 'none'; $('#authroot').innerHTML = '';
     renderNav();
-    const panels = {}; $$('details[data-panel]', $('#view')).forEach(el => { panels[el.dataset.panel] = el.open; });
+    const panels = {}; if (renderedJob === state.job) $$('details[data-panel]', $('#view')).forEach(el => { panels[el.dataset.panel] = el.open; });
+    renderedJob = state.job;
     $('#view').innerHTML = VIEWS[state.view]();
     $$('details[data-panel]', $('#view')).forEach(el => { if (Object.prototype.hasOwnProperty.call(panels, el.dataset.panel)) el.open = panels[el.dataset.panel]; });
     if (state.view === 'calc') recalc();
@@ -1987,8 +2064,21 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       case 'apply-ncr-invoice': syncChain = syncChain.then(applyNcrInvoice, applyNcrInvoice); await syncChain; break;
       case 'close': closeModal(); break;
       case 'sign-out': await sb.auth.signOut(); break;
+      case 'ncr-format': {
+        const value = d.format;
+        state.job.ncrFormat = value;
+        state.job.ncrRequestedCopies = state.job.addMaterials.filter(r=>r.role==='ncr').length;
+        if (value !== 'custom') resizeNcrCopies(Number(value));
+        render(); break;
+      }
+      case 'reset-copy-printing': {
+        const row = state.job.addMaterials[Number(d.i)];
+        ['sides','colors','colorMode','plates','setupHours'].forEach(k => {row[k] = '';});
+        render(); break;
+      }
       case 'new-job': state.job = freshJob(); state.editingId = null; state.editingUuid = null; state.savedTotal = null; render(); break;
       case 'add-material-role': {
+        if (d.role === 'ncr') { state.job.ncrFormat = 'custom'; delete state.job.ncrRequestedCopies; }
         state.job.addMaterials.push({ role: d.role, feed: 'web', materialId: '', qty: '', wastePct: '', setupWaste: '', printed: true, sides: '', colors: '', colorMode: '', finId: '', opQty: '', scales: false });
         render(); break;
       }
@@ -1997,7 +2087,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         rows.push({ finishing: { finId: '', qty: '', mult: 1, scales: false }, labor: { laborId: '', hours: '', scales: false }, addMaterials: { role: 'manual', materialId: '', qty: 1, scales: false }, other: { desc: '', qty: 1, unitCost: '', scales: false } }[d.list]);
         render(); break;
       }
-      case 'del': state.job[d.list].splice(Number(d.i), 1); render(); break;
+      case 'del': if (d.list === 'addMaterials' && state.job.addMaterials[Number(d.i)].role === 'ncr') { if (state.job.addMaterials.filter(r=>r.role==='ncr').length <= 1) { toast('An NCR job needs at least one copy.','warn'); break; } state.job.ncrCopyArchive = []; delete state.job.ncrRequestedCopies; state.job.ncrFormat = 'custom'; } state.job[d.list].splice(Number(d.i), 1); render(); break;
       case 'save-new': saveCalc(true); break;
       case 'save-calc': saveCalc(false); break;
       case 'toggle-needs': state.needsOnly = !state.needsOnly; render(); break;
@@ -2053,6 +2143,13 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   function onField(e) {
     const t = e.target;
+    if (t.id === 'ncr-copy-count') {
+      if (e.type !== 'change') return;
+      state.job.ncrRequestedCopies = t.value;
+      const count = Number(t.value);
+      if (!Number.isInteger(count) || count < 1 || count > 99) { recalc(); return; }
+      resizeNcrCopies(count); state.job.ncrFormat = 'custom'; render(); return;
+    }
     if (t.id === 'sizepreset') {
       if (e.type !== 'change') return;
       const j = state.job, preset = sizeOptions(j).find(p => p[0] === t.value);
@@ -2123,7 +2220,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   document.addEventListener('input', onField);
   document.addEventListener('change', (e) => {
     if (e.target.id === 'loadtest') { if (e.target.value === '') return; const j = Seed.testJobs()[Number(e.target.value)]; const { job, cleared } = sanitizeTestJob(clone(j)); state.job = job; state.editingId = null; state.editingUuid = null; state.savedTotal = null; if (!find(DB.materials, job.materialId) || !find(DB.machines, job.machineId) || cleared) toast('Some demo rates from this test job are not in your database yet — those rows were left blank.', 'warn'); render(); return; }
-    if (e.target.type === 'checkbox' || e.target.tagName === 'SELECT' || e.target.dataset.s || e.target.dataset.q2) onField(e);
+    if (e.target.id === 'ncr-copy-count' || e.target.type === 'checkbox' || e.target.tagName === 'SELECT' || e.target.dataset.s || e.target.dataset.q2) onField(e);
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#modal').classList.contains('open')) closeModal(); });
 
