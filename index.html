@@ -267,6 +267,28 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 .extra-stocks{margin:0!important;flex:1;min-width:180px}
 .extra-stocks summary{padding:7px 0}
 .ncr-flow input:not([type="checkbox"]),.ncr-flow select,.ncr-flow textarea{min-width:0;width:100%}
+
+/* Production requirements: grouped steps, consistent dimensions in cm. */
+.job-needs{width:100%;display:grid;gap:18px;min-width:0}
+.need-group{padding-top:16px;border-top:1px solid var(--line)}
+.need-group:first-child{border-top:0;padding-top:0}
+.need-group h4{font-size:14px;margin:0 0 12px;color:var(--ink)}
+.need-layout{display:grid;grid-template-columns:minmax(120px,.8fr) minmax(0,1.2fr);gap:16px;align-items:start}
+.need-layout figure{margin:0;text-align:center;background:var(--paper);border-radius:12px;padding:12px;min-width:0}
+.need-layout svg{max-width:100%;height:auto}
+.need-layout figcaption{font-size:11px;color:var(--muted);margin-top:8px}
+.need-kv{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:10px 14px;margin:0;font-size:13px;line-height:1.5}
+.need-kv dt{color:var(--muted)}
+.need-kv dd{margin:0;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.need-stock,.need-print{padding:12px;border:1px solid var(--line);border-radius:12px;margin:10px 0}
+.need-stock h5,.need-print h5{font-size:13px;margin:0 0 10px}
+.need-stock h5 span{display:block;color:var(--muted);font-weight:400;margin-top:4px}
+.need-counts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.need-counts span{display:flex;flex-direction:column;background:var(--paper);padding:10px;border-radius:8px;font-size:11px;color:var(--muted)}
+.need-counts b{font-size:20px;color:var(--ink);font-variant-numeric:tabular-nums;margin-bottom:3px}
+.need-costs summary{cursor:pointer;font-size:12px;font-weight:600;padding:8px 0}
+.need-costs .tbl{font-size:12px}
+@media(max-width:640px){.need-layout{grid-template-columns:1fr}.need-layout svg{max-height:220px}.need-kv{gap:8px 10px}.need-counts b{font-size:18px}}
 </style>
 </head>
 <body>
@@ -469,6 +491,12 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   }
 
   function pressSheet(job, mat, mach) {
+    if (job.ncrCutMode === 'exact') {
+      const u = UNIT_MM[job.unit] || 1;
+      const w = num(job.w) * u, h = num(job.h) * u;
+      const parent = imposeSheet({pieceW:w,pieceH:h,sheetW:num(mat.sheetW),sheetH:num(mat.sheetH),margin:0,gripper:0,bleed:0,gutter:0});
+      return {w,h,divisor:parent.ups,auto:false,exact:true,parentW:num(mat.sheetW),parentH:num(mat.sheetH),parentLayout:parent};
+    }
     if (num(job.pressW) > 0 && num(job.pressH) > 0) return {w:num(job.pressW),h:num(job.pressH),divisor:Math.max(num(job.parentDivisor,1),1),auto:false};
     const w = num(mat.sheetW), h = num(mat.sheetH), cw = num(mach && mach.maxSheetW), ch = num(mach && mach.maxSheetH);
     if (!(w > 0 && h > 0 && cw > 0 && ch > 0)) return {w,h,divisor:Math.max(num(job.parentDivisor,1),1),auto:false};
@@ -597,6 +625,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       const kind0 = layoutKind(job, mat, isBook);
       const cut = pressSheet(job,mat,mach);
       const sw0 = cut.w, sh0 = cut.h;
+      if (cut.exact && !(cut.divisor > 0)) err('materialId','The finished size cannot be cut from this parent sheet.');
+      if (cut.exact && (num(job.ow) > 0 || num(job.oh) > 0)) err('ow','Exact-size cutting uses finished dimensions. Clear the open size or choose the larger press-sheet workflow.');
       if (mach && kind0 === 'sheet' && !fitsPress(sw0,sh0,mach)) err('pressW', 'The press sheet exceeds the selected machine capacity. Reduce the press sheet dimensions.');
       if (materialMode(mat) === 'unknown' && !hasPress) err('materialId', `Material "${mat.name}" has no sheet size or roll width yet. Enter it in Materials (or Settings → Material costs).`);
       else if (kind0 === 'sheet' && !(sw0 > 0 && sh0 > 0)) err('materialId', `Material "${mat.name}" has no sheet size yet. Enter its width and height in Materials (or Settings → Material costs).`);
@@ -681,7 +711,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     /* ---- layout + units of material ---- */
     let goodU, unitName, unitWord, layout;
     if (kind === 'sheet') {
-      const imp = imposeSheet({ pieceW, pieceH, sheetW, sheetH, margin, gripper, bleed, gutter });
+      const imp = imposeSheet({ pieceW, pieceH, sheetW, sheetH, margin:cut.exact ? 0 : margin, gripper:cut.exact ? 0 : gripper, bleed:cut.exact ? 0 : bleed, gutter:cut.exact ? 0 : gutter });
       if (imp.ups < 1) {
         res.errors.push({ field: 'w', msg: `A piece of ${f(pieceW)} × ${f(pieceH)} mm (+ ${f(bleed)} mm bleed) does not fit inside the printable area ${f(imp.printW)} × ${f(imp.printH)} mm of the ${f(sheetW)} × ${f(sheetH)} mm sheet.` });
         return;
@@ -701,6 +731,10 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       goodU = b.length / 1000;
       unitName = 'm of roll'; unitWord = 'm';
       layout = { kind: 'roll', rollWidth: rollW, usableW, rollEdge: num(job.rollEdge), bleed, gutter, orientation: b.orientation, across: b.across, rows: b.rows, cellW: b.cw, cellH: b.ch, pw: b.pw, ph: b.ph, lengthM: goodU, lastRow: b.lastRow, options: imp.options.map((o) => ({ orientation: o.orientation, across: o.across, rows: o.rows, lengthM: o.length / 1000 })) };
+    }
+    if (cut.exact) {
+      Object.assign(layout,{margin:0,gripper:0,bleed:0,gutter:0});
+      res.warnings.push('Exact-size sheets are fed one form at a time. Keep artwork inside the press gripper and non-printable edges; this workflow does not allow bleed.');
     }
     res.layout = layout;
 
@@ -794,7 +828,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
     /* ---- Additional materials: independent layouts, quantities and operations ---- */
     res.materialRequirements = [{ index: -1, role: job.product === 'NCR' ? 'Original' : 'Main', name: mat.name,
-      materialId: mat.id, layout, good: goodU, waste: wasteU, total: totalU, unit: unitName, unitCost: uc.cost,
+      materialId: mat.id, layout, pressSheet:cut, good: goodU, waste: wasteU, total: totalU, unit: unitName, unitCost: uc.cost,
       cost: r2(matTotal), printingCost: 0 }];
     (job.addMaterials || []).forEach((row, i) => {
       const mm = find(db.materials, row.materialId); if (!mm) return;
@@ -816,7 +850,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
           layer.setupHours = isBlank(row.setupHours) ? job.setupHours : row.setupHours;
           if (materialMode(mm) !== 'sheet') { res.errors.push({ field: `addMaterials.${i}.materialId`, msg: 'NCR copies need sheet materials.' }); return; }
         } else {
-          layer.w = W / u; layer.h = H / u; layer.shape = 'rect'; layer.ow = ''; layer.oh = ''; layer.pages = ''; layer.pressW = ''; layer.pressH = ''; layer.parentDivisor = 1;
+          layer.ncrCutMode = ''; layer.w = W / u; layer.h = H / u; layer.shape = 'rect'; layer.ow = ''; layer.oh = ''; layer.pages = ''; layer.pressW = ''; layer.pressH = ''; layer.parentDivisor = 1;
           layer.margin = 0; layer.gripper = 0; layer.rollEdge = 0; layer.sides = 1;
           if (role !== 'lamination') layer.bleed = 0;
           if (role === 'cover') layer.qty = Math.ceil(qty / num(job.setsPerPad));
@@ -845,7 +879,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         const categories = printed ? ['material','printing','machine','setup','waste'] : ['material','waste'];
         categories.forEach((c) => lr.lines[c].forEach((l) => res.lines[c].push(Object.assign({}, l, { label: `${prefix} — ${l.label}` }))));
         const req = lr.summary.requirement;
-        detail = { index: i, role, name: mm.name, materialId: mm.id, layout: lr.layout, good: req.good, waste: req.waste, total: req.total, unit: lr.summary.unitName,
+        detail = { index: i, role, name: mm.name, materialId: mm.id, layout: lr.layout, pressSheet:lr.pressSheet, printing:printed ? lr.summary.printing : null, machineHours:printed ? lr.summary.machineHours : null, good: req.good, waste: req.waste, total: req.total, unit: lr.summary.unitName,
           unitCost: req.perUnit, cost: r2(lr.lines.material.reduce((a,l)=>a+l.amount,0) + lr.lines.waste.filter(l=>l.label.startsWith(mm.name)).reduce((a,l)=>a+l.amount,0)),
           printingCost: printed ? r2(lr.total - Math.max(req.total * req.perUnit, num(mm.minCharge), num(S.minimums && S.minimums.material))) : 0 };
       }
@@ -1237,7 +1271,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     }
     return j;
   }
-  function freshJob() { return autoPick(E.newJob({ mode: 'digital', name: '' })); }
+  function freshJob() { return autoPick(E.newJob({ mode: 'digital', name: '', unit:'cm', w:9, h:5.5 })); }
   // Seed.testJobs() references the LOCAL demo ids from seed.js (fin_matte_lam, lab_press, ...).
   // Your Supabase rows have their own generated ids, so any sub-row that doesn't match a real
   // row in this database is cleared rather than left pointing at something that doesn't exist.
@@ -1256,8 +1290,12 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   /* ================= form field builders (calculator) ================= */
   const val = (k) => { const v = getPath(state.job, k); return v == null ? '' : v; };
+  const CM_FIELDS = new Set(['bleed','margin','gripper','gutter','rollEdge','pressW','pressH','cutLen','sheetW','sheetH','rollWidth','maxSheetW','maxSheetH']);
+  const cmValue = (k,v) => isBlank(v) ? '' : CM_FIELDS.has(k) ? Number((Number(v)/10).toFixed(8)) : k === 'rollLength' ? Number((Number(v)*100).toFixed(8)) : v;
+  const internalValue = (k,v) => v === '' ? '' : CM_FIELDS.has(k) ? Number((Number(v)*10).toFixed(8)) : k === 'rollLength' ? Number((Number(v)/100).toFixed(8)) : v;
+  const cmLabel = label => label.replace(/\(mm\)/g,'(cm)');
   const F = {
-    num: (k, label, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="number" step="any" inputmode="decimal" value="${esc(val(k))}" placeholder="${esc(o.ph == null ? '' : o.ph)}"><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
+    num: (k, label, o) => { o = o || {}; label = cmLabel(label); return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="number" step="any" inputmode="decimal" value="${esc(cmValue(k,val(k)))}" placeholder="${esc(cmValue(k,o.ph == null ? '' : o.ph))}"><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
     txt: (k, label, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="text" value="${esc(val(k))}" placeholder="${esc(o.ph || '')}"><i class="err" data-err="${k}"></i></label>`; },
     sel: (k, label, options, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><select data-k="${k}"${o.r ? ' data-r="1"' : ''}${o.dis ? ' disabled' : ''}>${options.map((x) => opt(x[0], x[1], val(k) === '' && k === 'ncrQuantityMode' ? 'sets' : val(k) === '' && k.endsWith('.role') ? 'manual' : val(k) === '' && k.endsWith('.feed') ? 'web' : val(k))).join('')}</select><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
     chk: (k, label) => `<label class="chk"><input type="checkbox" data-k="${k}"${getPath(state.job, k) ? ' checked' : ''}> ${label}</label>`
@@ -1297,7 +1335,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     ['a4', 'A4', 210, 297], ['a5', 'A5', 148, 210],
     ['a6', 'A6', 105, 148], ['a7', 'A7', 74, 105],
     ['dl', 'DL', 99, 210], ['card', 'Business card', 90, 55],
-    ['card85', 'Business card (85 × 55 mm)', 85, 55],
+    ['card85', 'Business card (8.5 × 5.5 cm)', 85, 55],
     ['square50', 'Square sticker / label', 50, 50],
     ['square100', 'Square sticker / label', 100, 100],
     ['rollup85', 'Roll-up banner', 850, 2000],
@@ -1404,10 +1442,11 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const machOpts = [['', '— choose machine —']].concat(DB.machines.filter((m) => E.MODE_MACHINES[j.mode].includes(m.type)).map((m) => [m.id, m.name]));
     let layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · part 1' : 'Main printing material'}</h4><div class="grid g2">
       ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1, cls:ncr ? 'span2' : '' })}${materialPriceHTML(mat)}
+      ${ncr ? F.sel('ncrCutMode','How the stock is prepared',[['','Existing press-sheet workflow'],['exact','Cut to exact finished size before printing'],['press','Print on larger sheets, then trim']],{r:1,cls:'span2'}) + '<p class="hint span2">Exact-size cutting: one form per printing sheet. Material cost uses the cutting yield from the purchased parent sheet.</p>' : ''}
       </div><details class="adv" data-panel="main-layout"><summary>Layout &amp; sheet cutting <span>${kind === 'roll' ? 'Roll' : 'Sheet'}</span></summary><div class="grid" style="margin-top:12px">
-      ${kind === 'sheet' ? F.num('margin', 'Sheet margin, each edge (mm)', { hint: 'Not printable' }) + F.num('gripper', 'Gripper edge (mm)', { hint: 'Extra, one edge' }) : F.num('rollEdge', 'Roll edge margin, each side (mm)')}
-      ${F.num('gutter', 'Gap between pieces (mm)')}
-      ${kind === 'sheet' ? F.num('pressW', 'Press sheet width (mm)', { ph: mat && mat.sheetW ? mat.sheetW : '' }) + F.num('pressH', 'Press sheet height (mm)', { ph: mat && mat.sheetH ? mat.sheetH : '' }) + F.num('parentDivisor', 'Press sheets per purchased sheet', { hint: 'Used with a manual press sheet size. Blank press dimensions use the machine capacity to cut the purchased sheet automatically.' }) : ''}
+      ${kind === 'sheet' && j.ncrCutMode !== 'exact' ? F.num('margin', 'Sheet margin, each edge (mm)', { hint: 'Not printable' }) + F.num('gripper', 'Gripper edge (mm)', { hint: 'Extra, one edge' }) : kind === 'roll' ? F.num('rollEdge', 'Roll edge margin, each side (mm)') : '<p class="hint span2">Cutting yield uses exact dimensions without bleed or gaps. Keep the printed artwork inside the machine’s gripper and non-printable edges.</p>'}
+      ${j.ncrCutMode !== 'exact' ? F.num('gutter', 'Gap between pieces (mm)') : ''}
+      ${kind === 'sheet' && j.ncrCutMode !== 'exact' ? F.num('pressW', 'Press sheet width (mm)', { ph: mat && mat.sheetW ? mat.sheetW : '' }) + F.num('pressH', 'Press sheet height (mm)', { ph: mat && mat.sheetH ? mat.sheetH : '' }) + F.num('parentDivisor', 'Press sheets per purchased sheet', { hint: 'Used with a manual press sheet size. Blank press dimensions use the machine capacity to cut the purchased sheet automatically.' }) : ''}
       </div></details></div>`;
 
     let printFields = '';
@@ -1547,32 +1586,44 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     return `<div class="eq"><b>Total production cost</b> = Material + Printing + Finishing + Labor + Machine + Setup + Waste + Other<br>= ${parts}<br>= <b>${money(r.total)}</b><br><b>Cost per piece</b> = ${U.m(r.total)} ÷ ${U.f(r.qty)} pieces = <b>${perPieceFmt(r.perPiece)}</b></div><p class="hint">Cost per piece divides by the quantity you ordered (good pieces), so the cost of waste is spread over them.</p>`;
   }
   function requirementHTML(r) {
-    const s = r.summary, q = s.requirement, L = r.layout, dp = s.kind === 'sheet' ? 0 : 3;
-    const rows = [];
-    if (L.kind === 'sheet') {
-      rows.push(['Pieces per sheet', `${L.across} across × ${L.down} down = <b>${L.ups}</b> (orientation ${L.orientation}: ${L.pw} × ${L.ph} mm)`]);
-      rows.push(['Other orientation', `${L.orientation === 'A' ? 'B' : 'A'}: ${L[L.orientation === 'A' ? 'B' : 'A'].across} × ${L[L.orientation === 'A' ? 'B' : 'A'].down} = ${L[L.orientation === 'A' ? 'B' : 'A'].ups}`]);
-      if (r.pressSheet && r.pressSheet.auto) rows.push(['Automatic press-sheet cutting', `${r.pressSheet.w / 10} × ${r.pressSheet.h / 10} cm · ${r.pressSheet.divisor} press sheets per purchased parent sheet`]);
-      rows.push(['Printable area', `${U.f(L.printW)} × ${U.f(L.printH)} mm of ${U.f(L.sheetW)} × ${U.f(L.sheetH)} mm (${U.f(L.utilisation, 1)}% of the sheet is finished product)`]);
-      if (L.flats > 1) rows.push(['Designs / flats', `${L.flats} (${s.pages} pages ÷ 4), ${L.goodPerFlat} sheets each${L.openAuto ? '; open size taken as 2 × width' : ''}`]);
-    } else {
-      rows.push(['Pieces across', `${L.across} (orientation ${L.orientation}: ${L.pw} × ${L.ph} mm) on ${U.f(L.usableW)} mm usable width`]);
-      rows.push(['Rows along the roll', `${L.rows} (last row ${L.lastRow} piece${L.lastRow === 1 ? '' : 's'})`]);
-      rows.push(['Running length', `<b>${U.f(L.lengthM, 3)} m</b> = ${U.f(L.lengthM * L.rollWidth / 1000, 3)} m²`]);
-    }
-    rows.push(['Material needed', `${U.f(q.good, dp)} good + ${U.f(q.waste, dp)} waste = <b>${U.f(q.total, dp)} ${s.unitName}</b> (${U.f(q.pct)}% + setup ${U.f(q.setupWaste, dp)} + extra ${U.f(q.addWaste, dp)})`]);
-    const p = s.printing;
-    if (p.plates != null) rows.push(['Printing', `${U.f(p.impressions)} impressions, ${U.f(p.plates)} plates, ${p.colours} colours${p.passes > 1 ? `, ${p.passes} passes` : ''}`]);
-    else if (p.clicks != null) rows.push(['Printing', `${U.f(p.clicks)} clicks (${p.colorMode})`]);
-    else rows.push(['Printing', `${U.f(p.printedSqm, 3)} m² printed (${U.f(p.areaPerPiece * 10000, 1)} cm² per piece incl. bleed)`]);
-    rows.push(['Machine time', `${U.f(s.machineHours.run, 3)} h running + ${U.f(s.machineHours.setup, 3)} h setup`]);
-    if (r.stages.length) rows.push(['Finishing', r.stages.map((x) => `${esc(x.name)}: ${U.f(x.qtyEff, 2)} ${x.unit}`).join('; ')]);
-    rows.push(['Labor', `${U.f(s.labor.hours, 2)} h`]);
-    return `<dl class="kv">${rows.map((x) => `<dt>${x[0]}</dt><dd>${x[1]}</dd>`).join('')}</dl>`;
+    const s=r.summary, L=r.layout, cut=r.pressSheet, exact=cut && cut.exact;
+    const size=(w,h)=>`${U.f(w/10,3)} × ${U.f(h/10,3)} cm`;
+    const kv=rows=>`<dl class="need-kv">${rows.map(([a,b])=>`<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
+    const group=(title,content)=>`<section class="need-group"><h4>${title}</h4>${content}</section>`;
+    let diagram=L, rows=[];
+    if (L.kind==='sheet') {
+      if (exact) {
+        const P=cut.parentLayout;
+        diagram={...L,sheetW:cut.parentW,sheetH:cut.parentH,printW:cut.parentW,printH:cut.parentH,across:P.across,down:P.down,ups:P.ups,cellW:P.best.cw,cellH:P.best.ch,pw:P.best.pw,ph:P.best.ph};
+        rows=[['Purchased parent sheet',size(cut.parentW,cut.parentH)],['Cut to finished size',size(L.sheetW,L.sheetH)],['Finished sheets per parent',`<b>${cut.divisor}</b> · ${P.across} across × ${P.down} down`],['Forms per printing sheet','<b>1</b> · feed each finished sheet separately']];
+      } else {
+        rows=[['Printing sheet',size(L.sheetW,L.sheetH)],['Forms per printing sheet',`<b>${L.ups}</b> · ${L.across} across × ${L.down} down`],['Printable area',size(L.printW,L.printH)]];
+        if (cut && cut.auto) rows.unshift(['Cutting the parent sheet',`${cut.divisor} printing sheets per purchased parent sheet`]);
+        if (L.flats>1) rows.push(['Designs / flats',`${L.flats} · ${s.pages} pages · ${L.goodPerFlat} sheets each`]);
+      }
+    } else rows=[['Roll width',`${U.f(L.rollWidth/10,3)} cm`],['Usable width',`${U.f(L.usableW/10,3)} cm`],['Pieces across',`<b>${L.across}</b>`],['Rows',`${L.rows} · last row ${L.lastRow} pieces`],['Roll length needed',`${U.f(L.lengthM*100,3)} cm`]];
+    const cutting=group(exact ? '1 · Cut the stock before printing' : '1 · Layout & cutting',`<div class="need-layout"><figure>${L.kind==='sheet' ? sheetSVG(diagram) : rollSVG(diagram)}<figcaption>${exact ? 'Parent-sheet cutting plan · original stock' : 'Printing layout · main stock'}</figcaption></figure>${kv(rows)}</div>${exact ? '<p class="hint">Uniform cutting grid, no bleed. Keep artwork inside the press’s non-printable edges.</p>' : ''}`);
+    const materials=r.materialRequirements || [];
+    const materialRows=materials.map(x=>`<article class="need-stock"><h5>${x.index===-1 ? 'Original / main stock' : x.role==='ncr' ? `NCR copy ${x.index+1}` : esc(x.role)} <span>${esc(x.name)}</span></h5><div class="need-counts"><span><b>${U.f(x.good,3)}</b>Good</span><span><b>${U.f(x.waste,3)}</b>Waste</span><span><b>${U.f(x.total,3)}</b>Total ${esc(x.unit)}</span></div>${x.pressSheet && x.pressSheet.exact ? `<p class="hint">${size(x.pressSheet.parentW,x.pressSheet.parentH)} parent → ${x.pressSheet.divisor} finished sheets · ${U.f(x.total/x.pressSheet.divisor,3)} parent-sheet equivalents</p>` : ''}</article>`).join('');
+    const material=group('2 · Materials & waste',materialRows + '<p class="hint">Waste is extra material for setup and production. Parent-sheet equivalents show prorated consumption.</p>' + materialRequirementsHTML(r));
+    const printRows=materials.filter(x=>x.index===-1 || x.role==='ncr').map(x=>{
+      const p=x.index===-1 ? s.printing : x.printing, hours=x.index===-1 ? s.machineHours : x.machineHours;
+      const label=x.index===-1 ? 'Original / main stock' : `NCR copy ${x.index+1}`;
+      if (!p) return `<div class="need-print"><h5>${label}</h5><p class="hint">${p === null ? 'Paper only · no printing' : 'Printing details were not stored. Recalculate this job to see them.'}</p></div>`;
+      const rr=[];
+      if (p.plates!=null) rr.push(['Colours / passes',`${p.colours} colours · ${p.passes} pass${p.passes===1?'':'es'}`],['New plates',U.f(p.plates)],['Impressions',U.f(p.impressions)]);
+      else if (p.clicks!=null) rr.push(['Printing',`${U.f(p.clicks)} clicks · ${esc(p.colorMode)}`]);
+      else rr.push(['Printed area',`${U.f(p.printedSqm,3)} m²`]);
+      if (hours) rr.push(['Running time',`${U.f(hours.run*60,1)} min`],['Setup time',`${U.f(hours.setup*60,1)} min`]);
+      return `<div class="need-print"><h5>${label}</h5>${kv(rr)}</div>`;
+    }).join('');
+    const printing=group('3 · Printing & machine time',`<p class="hint">${esc(s.machine)}</p>${printRows}`);
+    const finish=group('4 · Finishing & labour',r.stages.length ? kv(r.stages.map(x=>[esc(x.name),`${U.f(x.qtyEff,3)} ${esc(({per_piece:'pieces',per_sheet:'sheets',per_sqm:'m²',per_meter:'m',per_hour:'hours',fixed:'job'})[x.method] || x.unit)}`])) + kv([['Labour',`${U.f(s.labor.hours*60,1)} min`]]) : `<p class="hint">No finishing operations selected.</p>${kv([['Labour',`${U.f(s.labor.hours*60,1)} min`]])}`);
+    return `<div class="job-needs">${cutting}${material}${printing}${finish}</div>`;
   }
   function materialRequirementsHTML(r) {
     if (!r.materialRequirements || r.materialRequirements.length < 2) return '';
-    return `<section class="card"><h3>All material requirements</h3><div class="tscroll"><table class="tbl"><thead><tr><th>Purpose / stock</th><th>Good</th><th>Waste</th><th>Total</th><th>Unit</th><th>Rate used / unit</th><th>Material cost</th></tr></thead><tbody>${r.materialRequirements.map(x => `<tr><td>${esc(x.role)} · ${esc(x.name)}</td><td>${U.f(x.good,3)}</td><td>${U.f(x.waste,3)}</td><td>${U.f(x.total,3)}</td><td>${esc(x.unit)}</td><td>${esc(cur())} ${Number(x.unitCost).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})}</td><td>${money(x.cost)}</td></tr>`).join('')}</tbody></table></div></section>`;
+    return `<details class="need-costs"><summary>All material requirements · cost details</summary><div class="tscroll"><table class="tbl"><thead><tr><th>Purpose / stock</th><th>Good</th><th>Waste</th><th>Total</th><th>Unit</th><th>Rate used / unit</th><th>Material cost</th></tr></thead><tbody>${r.materialRequirements.map(x => `<tr><td>${esc(x.role)} · ${esc(x.name)}${x.pressSheet && x.pressSheet.exact ? `<br><small>${x.pressSheet.divisor} finished sheets per parent · ${U.f(x.total / x.pressSheet.divisor,3)} parent-sheet equivalents</small>` : ''}</td><td>${U.f(x.good,3)}</td><td>${U.f(x.waste,3)}</td><td>${U.f(x.total,3)}</td><td>${esc(x.unit)}</td><td>${esc(cur())} ${Number(x.unitCost).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})}</td><td>${money(x.cost)}</td></tr>`).join('')}</tbody></table></div></details>`;
   }
 
   function resultsHTML(r) {
@@ -1587,8 +1638,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         <div class="lbl">Total production cost</div><div class="big"><small>${esc(cur())}</small>${U.m(r.total)}</div>
         <div class="two"><div><div class="lbl">${j.product === 'NCR' ? 'Complete sets' : 'Quantity'}</div><div class="v">${U.f(r.qty)}</div></div><div><div class="lbl">${j.product === 'NCR' ? 'Cost per set' : 'Cost per piece'}</div><div class="v">${perPieceFmt(r.perPiece)}</div></div></div>
         <div class="strip"><i></i><i></i><i></i><i></i></div></div></div>
-      <div class="saveline">${saveBtns}</div>${editBanner}${warn}${j.product === 'NCR' ? `<div class="notice info">${r.summary.ncrParts} parts per set${r.summary.pads ? ` · ${r.summary.pads} pads/books · average ${money(r.total / r.summary.pads)} per pad/book${r.qty % num(j.setsPerPad) ? ' (last pad is partial)' : ''}` : ''}</div>` : ''}${materialRequirementsHTML(r)}
-      <section class="card"><h3>What the job needs</h3><div class="figure">${r.layout.kind === 'sheet' ? sheetSVG(r.layout) : rollSVG(r.layout)}${requirementHTML(r)}</div></section>
+      <div class="saveline">${saveBtns}</div>${editBanner}${warn}${j.product === 'NCR' ? `<div class="notice info">${r.summary.ncrParts} parts per set${r.summary.pads ? ` · ${r.summary.pads} pads/books · average ${money(r.total / r.summary.pads)} per pad/book${r.qty % num(j.setsPerPad) ? ' (last pad is partial)' : ''}` : ''}</div>` : ''}
+      <section class="card job-needs-card"><h3>What the job needs</h3>${requirementHTML(r)}</section>
       <section class="card"><h3>Cost breakdown <small>${esc(j.name || 'Untitled job')}</small></h3>${breakdownHTML(r)}</section>
       <section class="card"><h3>How the total is built</h3>${formulaHTML(r)}</section>`;
   }
@@ -1704,7 +1755,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       sub: 'Purchase price and unit are what you enter; cost per sheet, meter and m² are worked out for you. Shared with everyone signed in.',
       cols: [
         { h: 'Material', f: (r) => `<b>${esc(r.name)}</b>${demoTag(r)}` }, { h: 'Category', f: (r) => esc(r.category) }, { h: 'GSM / thickness', f: (r) => esc(r.gsm) },
-        { h: 'Sheet (mm)', f: (r) => (num(r.sheetW) > 0 ? `${U.f(r.sheetW)} × ${U.f(r.sheetH)}` : (matNeeds(r).size && !(num(r.rollWidth) > 0) ? '<span class="need">Needs size</span>' : '—')) }, { h: 'Roll width (mm)', n: 1, f: (r) => nf(r.rollWidth, 0) },
+        { h: 'Sheet (cm)', f: (r) => (num(r.sheetW) > 0 ? `${U.f(r.sheetW/10)} × ${U.f(r.sheetH/10)}` : (matNeeds(r).size && !(num(r.rollWidth) > 0) ? '<span class="need">Needs size</span>' : '—')) }, { h: 'Roll width (cm)', n: 1, f: (r) => isBlank(r.rollWidth) ? '—' : U.f(num(r.rollWidth)/10,2) },
         { h: 'Purchase cost', n: 1, f: (r) => isBlank(r.purchaseCost) ? '<span class="need">Needs price</span>' : `${U.m(num(r.purchaseCost))} <small>${esc(({ sheet: '/sheet', pack: `/pack of ${r.packSize || '?'}`, meter: '/m', sqm: '/m²', roll: `/roll${num(r.rollLength) ? ' of ' + r.rollLength + ' m' : ''}` })[r.unit] || '')}</small>` },
         { h: 'Per sheet', n: 1, f: (r) => { const d = E.matDerived(r); return d.perSheet == null ? '—' : U.f(d.perSheet, 4); } },
         { h: 'Per meter', n: 1, f: (r) => { const d = E.matDerived(r); return d.perMeter == null ? '—' : U.f(d.perMeter, 4); } },
@@ -1800,7 +1851,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   function formBody(key, d, errs) {
     errs = errs || {};
     const html = fieldDefs(key, d).map((f) => {
-      const v = d[f.k] == null ? '' : d[f.k];
+      const v = cmValue(f.k,d[f.k] == null ? '' : d[f.k]); f.label = f.k === 'rollLength' ? 'Roll length (cm)' : cmLabel(f.label);
       const e = errs[f.k] ? `<i class="err">${esc(errs[f.k])}</i>` : '<i class="err"></i>';
       const inv = errs[f.k] ? ' aria-invalid="true"' : '';
       if (f.type === 'select') return `<label class="f ${f.cls || ''}"><span>${f.label}</span><select data-d="${f.k}"${f.r ? ' data-dr="1"' : ''}>${f.options.map((o) => opt(o[0], o[1], v)).join('')}</select></label>`;
@@ -1865,7 +1916,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   function openCalc(id) {
     const c = find(DB.calcs, id); if (!c) return;
     const r = c.full;
-    const body = r ? `<div class="figure">${r.layout.kind === 'sheet' ? sheetSVG(r.layout) : rollSVG(r.layout)}${requirementHTML(r)}</div>${breakdownHTML(r)}${formulaHTML(r)}` : '<p class="hint">No detailed breakdown was saved for this one.</p>';
+    const body = r ? `<div class="figure">${requirementHTML(r)}</div>${breakdownHTML(r)}${formulaHTML(r)}` : '<p class="hint">No detailed breakdown was saved for this one.</p>';
     openModal(`<h2>${esc(c.id)} · ${esc(c.name)}</h2><dl class="kv" style="margin-bottom:14px"><dt>Date</dt><dd>${new Date(c.date).toLocaleString('en-GB')}</dd><dt>Product</dt><dd>${esc(c.product)}</dd><dt>Quantity</dt><dd>${U.f(c.quantity)}</dd><dt>Total production cost</dt><dd><b>${money(c.total)}</b></dd><dt>Cost per piece</dt><dd><b>${perPieceFmt(c.perPiece)}</b></dd>${c.job && c.job.notes ? `<dt>Notes</dt><dd>${esc(c.job.notes)}</dd>` : ''}</dl>${body}
       <div class="foot"><button class="btn" data-act="close">Close</button><button class="btn primary" data-act="edit-calc" data-id="${esc(c.id)}">Edit</button></div>`);
   }
@@ -1876,7 +1927,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     return `<label class="f"><span>${label}</span><input data-s="${path}" type="${o.text ? 'text' : 'number'}" ${o.text ? '' : 'step="any"'} value="${esc(v)}"${o.text ? ' maxlength="6"' : ''}></label>`;
   }
   function quickTable(key, cols) {
-    return `<div class="tscroll"><table class="tbl tight"><thead><tr><th>${key === 'labor' ? 'Labor category' : 'Name'}</th>${cols.map((c) => `<th class="n">${c[1]}</th>`).join('')}</tr></thead><tbody>${DB[key].map((r) => `<tr><td>${esc(r.name || r.category)}${demoTag(r)}</td>${cols.map((c) => `<td class="n" style="width:130px"><input type="number" step="any" data-q2="${key}.${r.id}.${c[0]}" value="${esc(r[c[0]])}"${canEdit() ? '' : ' disabled'} aria-label="${esc(c[1])}"></td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+    return `<div class="tscroll"><table class="tbl tight"><thead><tr><th>${key === 'labor' ? 'Labor category' : 'Name'}</th>${cols.map((c) => `<th class="n">${cmLabel(c[1])}</th>`).join('')}</tr></thead><tbody>${DB[key].map((r) => `<tr><td>${esc(r.name || r.category)}${demoTag(r)}</td>${cols.map((c) => `<td class="n" style="width:130px"><input type="number" step="any" data-q2="${key}.${r.id}.${c[0]}" value="${esc(cmValue(c[0],r[c[0]]))}"${canEdit() ? '' : ' disabled'} aria-label="${esc(cmLabel(c[1]))}"></td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   }
   const NCR_INVOICE = [
     {key:'cb_white',stock:'CB White',name:'JH NCR CB WHITE 55GSM 70*100',gsm:55,packs:5,price:230},
@@ -2013,7 +2064,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     return head('Test jobs', 'The five reference jobs run through the same engine, using the built-in demo rates (not your database) so the numbers are repeatable.')
       + '<div class="notice">These use <b>demo</b> rates. The numbers are placeholders, useful for checking the maths — not real prices.</div>'
       + `<div class="card"><div class="tscroll"><table class="tbl"><thead><tr><th>Job</th><th>Material (good + waste)</th><th>Printing requirement</th><th>Finishing</th><th class="n">Labor</th><th class="n">Machine + setup</th><th class="n">Total (AED)</th><th class="n">Per piece</th></tr></thead><tbody>${tj.map((j, i) => rowFor(j, res[i])).join('')}</tbody></table></div></div>`
-      + tj.map((j, i) => { const r = res[i]; return `<details class="card"><summary style="cursor:pointer;font-weight:650">${esc(j.name)} — AED ${U.m(r.total)} · ${r.perPiece.toFixed(4)} per piece</summary><div style="margin-top:12px" class="figure">${r.layout.kind === 'sheet' ? sheetSVG(r.layout) : rollSVG(r.layout)}${requirementHTML(r)}</div><div style="margin-top:14px">${breakdownHTML(r)}</div><div style="margin-top:12px">${formulaHTML(r)}</div><div class="actions" style="margin-top:12px"><button class="btn sm" data-act="load-test" data-i="${i}">Load into calculator</button></div></details>`; }).join('');
+      + tj.map((j, i) => { const r = res[i]; return `<details class="card"><summary style="cursor:pointer;font-weight:650">${esc(j.name)} — AED ${U.m(r.total)} · ${r.perPiece.toFixed(4)} per piece</summary><div style="margin-top:12px" class="figure">${requirementHTML(r)}</div><div style="margin-top:14px">${breakdownHTML(r)}</div><div style="margin-top:12px">${formulaHTML(r)}</div><div class="actions" style="margin-top:12px"><button class="btn sm" data-act="load-test" data-i="${i}">Load into calculator</button></div></details>`; }).join('');
   }
 
   /* ================= auth screen ================= */
@@ -2200,7 +2251,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (t.id === 'cmpq') { state.cmp = t.value; paintCompare(); return; }
     if (t.dataset.q) { state.q[t.dataset.q] = t.value; const rs = t.dataset.q === 'saved' ? savedRows() : crudRows(t.dataset.q); $('#crudbody').innerHTML = rs.html; $('#crudcount').textContent = rs.count; return; }
     if (t.dataset.d && modalCtx && modalCtx.kind === 'form') {
-      modalCtx.draft[t.dataset.d] = t.value;
+      modalCtx.draft[t.dataset.d] = internalValue(t.dataset.d,t.value);
       if (t.dataset.dr && e.type === 'change') { $('#formbody').innerHTML = formBody(modalCtx.key, modalCtx.draft); }
       else if (modalCtx.key === 'materials') { const box = $('.notice.info', $('#formbody')); if (box) { const dv = E.matDerived(modalCtx.draft), c = (x, u) => (x == null ? '—' : `${U.f(x, 4)} ${cur()}${u}`); box.innerHTML = `<b>Worked out from the purchase cost:</b> ${c(dv.perSheet, ' / sheet')} · ${c(dv.perMeter, ' / m')} · ${c(dv.perSqm, ' / m²')}`; } }
       return;
@@ -2217,8 +2268,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (t.dataset.q2) {
       if (e.type !== 'change') return;
       const [key, id, field] = t.dataset.q2.split('.'); const rec = find(DB[key], id); if (!rec) return;
-      if (t.value === '') { if (['setupRate', 'minCharge', 'setupCost', 'sheetW', 'sheetH', 'rollWidth'].includes(field)) rec[field] = ''; else { toast('This value cannot be empty.', 'warn'); t.value = rec[field]; return; } }
-      else { const v = Number(t.value); if (!Number.isFinite(v) || v < 0) { toast('Enter a number that is 0 or more.', 'warn'); t.value = rec[field]; return; } rec[field] = v; }
+      if (t.value === '') { if (['setupRate', 'minCharge', 'setupCost', 'sheetW', 'sheetH', 'rollWidth'].includes(field)) rec[field] = ''; else { toast('This value cannot be empty.', 'warn'); t.value = cmValue(field,rec[field]); return; } }
+      else { const v = Number(t.value); if (!Number.isFinite(v) || v < 0) { toast('Enter a number that is 0 or more.', 'warn'); t.value = cmValue(field,rec[field]); return; } rec[field] = internalValue(field,t.value); }
       save(); toast('Saved.'); return;
     }
     if (t.dataset.k) {
@@ -2240,7 +2291,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
           if (old !== '' && old != null && Number.isFinite(Number(old))) state.job[key] = Number((Number(old) * factor).toFixed(8));
         });
       }
-      setPath(state.job, k, v);
+      setPath(state.job, k, internalValue(k,v));
       if (k === 'materialId') delete state.job.ncrDefaultMaterialId;
       if (/^addMaterials\.\d+\.materialId$/.test(k)) delete state.job.addMaterials[Number(k.split('.')[1])].ncrDefaultMaterialId;
       if (['w', 'h', 'diameter'].includes(k)) {
@@ -2254,7 +2305,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
           if (v === 'NCR') {
             if (!state.job.addMaterials.some(r=>r.role==='ncr')) state.job.addMaterials.push(blankNcrCopy());
             if (previousProduct !== 'NCR') {
-              state.job.mode = 'offset'; state.job.colors = 1;
+              state.job.mode = 'offset'; state.job.colors = 1; state.job.ncrCutMode = 'exact'; state.job.bleed = 0; state.job.ow = ''; state.job.oh = '';
               const press = defaultNcrMachine(); state.job.machineId = press ? press.id : '';
               applyNcrMaterialDefaults(state.job,true);
             }
