@@ -1190,17 +1190,49 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   /* ================= job helpers ================= */
   const PRODUCT_MODE = { Sticker: 'sticker', Label: 'sticker', Banner: 'large_format', 'Roll-up': 'large_format', Poster: 'large_format', 'Large Format': 'large_format' };
+  function defaultNcrMachine() {
+    const presses = DB.machines.filter(m => m.type === 'offset' && Number(m.colorUnits) === 1 && !m.demo);
+    return presses.find(m => /(?:^|\D)711940(?:\D|$)/.test(m.name + ' ' + (m.notes || '')))
+      || presses.find(m => /(?:^|\D)709433(?:\D|$)/.test(m.name + ' ' + (m.notes || '')))
+      || presses[0] || null;
+  }
+  function defaultNcrStock(stock) {
+    const candidates = DB.materials.filter(m => !m.demo && E.materialMode(m) === 'sheet' && invoiceStockName(m.name) === stock);
+    return candidates.sort((a,b) => Number(String(b.notes || '').includes('Confirmed invoice:')) - Number(String(a.notes || '').includes('Confirmed invoice:'))
+      || Number(matReady(b)) - Number(matReady(a)) || a.name.localeCompare(b.name))[0] || null;
+  }
+  function defaultCopyStock(index,count) {
+    if (count === 1 || index === 0) return defaultNcrStock('cfbpink');
+    if (index === count - 1) return defaultNcrStock('cfyellow');
+    return defaultNcrStock('cfbblue') || defaultNcrStock('cfbgreen') || defaultNcrStock('cfbpink');
+  }
+  function applyNcrMaterialDefaults(j,initial) {
+    const white = defaultNcrStock('cbwhite');
+    if (initial || !j.materialId) {
+      j.materialId = white ? white.id : '';
+      j.ncrDefaultMaterialId = j.materialId;
+    }
+    const copies = j.addMaterials.filter(r => r.role === 'ncr');
+    copies.forEach((r,i) => {
+      if (!r.materialId || (r.ncrDefaultMaterialId && r.materialId === r.ncrDefaultMaterialId)) {
+        const stock = defaultCopyStock(i,copies.length);
+        r.materialId = stock ? stock.id : '';
+        r.ncrDefaultMaterialId = r.materialId;
+      }
+    });
+  }
+
   function autoPick(j) {
     const okTypes = E.MODE_MACHINES[j.mode];
     const pref = j.mode === 'sticker' ? ['large_format', 'digital', 'uv'] : okTypes;
     if (!DB.machines.find((m) => m.id === j.machineId && okTypes.includes(m.type))) {
-      let pick = null; pref.some((t) => (pick = DB.machines.find((m) => m.type === t))); j.machineId = pick ? pick.id : '';
+      let pick = null; if (j.product === 'NCR' && j.mode === 'offset') pick = defaultNcrMachine(); else pref.some((t) => (pick = DB.machines.find((m) => m.type === t))); j.machineId = pick ? pick.id : '';
     }
     const need = j.mode === 'offset' || j.mode === 'digital' ? 'sheet' : null;
     const c = find(DB.materials, j.materialId);
     if (!c || (need && E.materialMode(c) !== 'sheet')) {
       const okMode = (m) => (need ? E.materialMode(m) === 'sheet' : E.materialMode(m) === 'roll');
-      const p = DB.materials.find((m) => matReady(m) && okMode(m)) || DB.materials.find(okMode) || DB.materials[0];
+      const p = j.product === 'NCR' ? defaultNcrStock('cbwhite') : DB.materials.find((m) => matReady(m) && okMode(m)) || DB.materials.find(okMode) || DB.materials[0];
       j.materialId = p ? p.id : '';
     }
     return j;
@@ -1291,6 +1323,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     j.ncrRequestedCopies = count;
     j.addMaterials = Array.from({length:count},(_,i) => clone(copies[i] || archive[i] || blankNcrCopy()))
       .concat(j.addMaterials.filter(r => r.role !== 'ncr'));
+    applyNcrMaterialDefaults(j,false);
   }
   function ncrFormatHTML(j) {
     const count = j.addMaterials.filter(r => r.role === 'ncr').length;
@@ -1467,7 +1500,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (ncr) materialActions = `<div class="material-actions"><button class="btn sm" data-act="add-material-role" data-role="cover">+ Cover / backing</button><details class="adv extra-stocks" data-panel="ncr-extra-stocks"><summary>Other materials <span>Optional</span></summary><div class="material-actions"><button class="btn sm" data-act="add" data-list="addMaterials">+ Add material</button><button class="btn sm" data-act="add-material-role" data-role="ncr">+ Add one copy</button></div></details></div>`;
     const materialCard = `<section class="card" id="job-materials"><h3>${ncr ? '<span class="step-title"><i>3</i> Materials &amp; printing</span>' : '2 · Materials'} <small>${1 + j.addMaterials.length} stocks</small></h3>
       <p class="hint section-intro">Choose every stock used in this job here. Add processing to film or board below its stock selection.</p>
-      ${j.product === 'NCR' ? '<p class="hint">One original plus each copy makes a complete set. Copies use the main printing machine; adjust reused plates and stock-change setup as needed.</p>' : ''}
+      ${j.product === 'NCR' ? '<p class="hint">Defaults: CB White original, CFB Pink first copy and CF Yellow last copy for 1 + 2 or more. Middle copies use CFB Blue/Green when available, otherwise Pink. All selections are editable. Missing defaults stay blank; add the stocks and equipment in Settings.</p>' : ''}
       ${materialActions}${layoutCard}${wasteCard}<div class="rows material-list">${addRows}</div>
       ${j.lamFinId ? `<details class="adv" data-panel="legacy-lamination" open><summary>Existing lamination operation</summary><div class="grid g2" style="margin-top:12px">${F.sel('lamFinId', 'Lamination operation', [['', 'None']].concat(DB.finishing.map(f => [f.id,f.name])), {r: 1})}</div><p class="hint">This saved job already has a lamination operation. Charge processing only once when adding a film row.</p></details>` : ''}
       <p class="hint">Processing rates should exclude materials charged separately.</p></section>`;
@@ -2080,6 +2113,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       case 'add-material-role': {
         if (d.role === 'ncr') { state.job.ncrFormat = 'custom'; delete state.job.ncrRequestedCopies; }
         state.job.addMaterials.push({ role: d.role, feed: 'web', materialId: '', qty: '', wastePct: '', setupWaste: '', printed: true, sides: '', colors: '', colorMode: '', finId: '', opQty: '', scales: false });
+        if (d.role === 'ncr') applyNcrMaterialDefaults(state.job,false);
         render(); break;
       }
       case 'add': {
@@ -2087,7 +2121,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         rows.push({ finishing: { finId: '', qty: '', mult: 1, scales: false }, labor: { laborId: '', hours: '', scales: false }, addMaterials: { role: 'manual', materialId: '', qty: 1, scales: false }, other: { desc: '', qty: 1, unitCost: '', scales: false } }[d.list]);
         render(); break;
       }
-      case 'del': if (d.list === 'addMaterials' && state.job.addMaterials[Number(d.i)].role === 'ncr') { if (state.job.addMaterials.filter(r=>r.role==='ncr').length <= 1) { toast('An NCR job needs at least one copy.','warn'); break; } state.job.ncrCopyArchive = []; delete state.job.ncrRequestedCopies; state.job.ncrFormat = 'custom'; } state.job[d.list].splice(Number(d.i), 1); render(); break;
+      case 'del': if (d.list === 'addMaterials' && state.job.addMaterials[Number(d.i)].role === 'ncr') { if (state.job.addMaterials.filter(r=>r.role==='ncr').length <= 1) { toast('An NCR job needs at least one copy.','warn'); break; } state.job.ncrCopyArchive = []; delete state.job.ncrRequestedCopies; state.job.ncrFormat = 'custom'; } state.job[d.list].splice(Number(d.i), 1); if (d.list === 'addMaterials' && state.job.product === 'NCR') applyNcrMaterialDefaults(state.job,false); render(); break;
       case 'save-new': saveCalc(true); break;
       case 'save-calc': saveCalc(false); break;
       case 'toggle-needs': state.needsOnly = !state.needsOnly; render(); break;
@@ -2189,6 +2223,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     }
     if (t.dataset.k) {
       const k = t.dataset.k, v = t.type === 'checkbox' ? t.checked : t.value;
+      if (k === 'product' && e.type !== 'change') return;
+      const previousProduct = state.job.product;
       if (k === 'ncrQuantityMode') {
         if (e.type !== 'change') return;
         if (v === 'books') {
@@ -2205,12 +2241,26 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         });
       }
       setPath(state.job, k, v);
+      if (k === 'materialId') delete state.job.ncrDefaultMaterialId;
+      if (/^addMaterials\.\d+\.materialId$/.test(k)) delete state.job.addMaterials[Number(k.split('.')[1])].ncrDefaultMaterialId;
       if (['w', 'h', 'diameter'].includes(k)) {
         state.job.sizePreset = 'custom';
         const picker = $('#sizepreset'); if (picker) picker.value = 'custom';
       }
       if (e.type === 'change' && t.dataset.r) {
-        if (k === 'product') { const pm = PRODUCT_MODE[v]; if (pm) state.job.mode = pm; else if (state.job.mode !== 'offset' && state.job.mode !== 'digital') state.job.mode = 'digital'; if (E.BOOK.includes(v)) state.job.sides = 2; if (v === 'NCR' && !state.job.addMaterials.some(r => r.role === 'ncr')) state.job.addMaterials.push({role: 'ncr', materialId: '', qty: '', printed: true, sides: '', colors: '', colorMode: '', wastePct: '', setupWaste: '', finId: '', opQty: '', scales: false}); autoPick(state.job); }
+        if (k === 'product') {
+          const pm = PRODUCT_MODE[v]; if (pm) state.job.mode = pm; else if (state.job.mode !== 'offset' && state.job.mode !== 'digital') state.job.mode = 'digital';
+          if (E.BOOK.includes(v)) state.job.sides = 2;
+          if (v === 'NCR') {
+            if (!state.job.addMaterials.some(r=>r.role==='ncr')) state.job.addMaterials.push(blankNcrCopy());
+            if (previousProduct !== 'NCR') {
+              state.job.mode = 'offset'; state.job.colors = 1;
+              const press = defaultNcrMachine(); state.job.machineId = press ? press.id : '';
+              applyNcrMaterialDefaults(state.job,true);
+            }
+          }
+          autoPick(state.job);
+        }
         if (/^addMaterials\.\d+\.role$/.test(k)) { const row = state.job.addMaterials[Number(k.split('.')[1])]; row.qty = v === 'manual' ? 1 : ''; row.printed = true; row.wastePct = ''; row.setupWaste = ''; }
         if (k === 'mode') { autoPick(state.job); if (v !== 'sticker') { state.job.shape = 'rect'; state.job.cutFinId = ''; state.job.lamFinId = ''; } }
         render();
