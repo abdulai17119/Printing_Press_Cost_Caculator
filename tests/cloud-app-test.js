@@ -290,6 +290,39 @@ async function run() {
   type(win,'[data-k="w"]','210');type(win,'[data-k="h"]','297');type(win,'[data-k="wastePct"]','10');type(win,'[data-k="setupWaste"]','20');
   ok('invoice NCR estimate uses 66.24 white and 69.12 pink for 144 sheets', Math.abs(win.__PPCC.state.result.materialRequirements[0].cost-66.24)<.001 && Math.abs(win.__PPCC.state.result.materialRequirements[1].cost-69.12)<.001);
 
+  // ---------- Finished size presets and custom dimensions ----------
+  type(win, '#sizepreset', 'a5');
+  ok('A5 preset fills NCR dimensions in cm', win.__PPCC.state.job.unit === 'cm' && win.__PPCC.state.job.w === 14.8 && win.__PPCC.state.job.h === 21);
+  type(win, '#sizepreset', 'a4');
+  const presetTotal = win.__PPCC.state.result.total;
+  type(win, '[data-k="unit"]', 'mm');
+  ok('changing unit converts A4 without changing physical size', win.__PPCC.state.job.w === 210 && win.__PPCC.state.job.h === 297 && $(doc, '#sizepreset').value === 'a4');
+  ok('unit conversion preserves calculated costs', Math.abs(win.__PPCC.state.result.total - presetTotal) < .001);
+  type(win, '#sizepreset', 'custom');
+  ok('Custom keeps existing dimensions ready for editing', win.__PPCC.state.job.w === 210 && $(doc, '#sizepreset').value === 'custom');
+  type(win, '[data-k="w"]', '180'); type(win, '[data-k="h"]', '250');
+  win.__PPCC.render();
+  ok('custom dimensions survive render', win.__PPCC.state.job.w === '180' && win.__PPCC.state.job.h === '250' && $(doc, '#sizepreset').value === 'custom');
+  type(win, '#sizepreset', 'card');
+  ok('business card preset fills 9 by 5.5 cm', win.__PPCC.state.job.w === 9 && win.__PPCC.state.job.h === 5.5);
+  type(win, '[data-k="w"]', '9.5');
+  ok('editing preset dimensions switches to Custom immediately', $(doc, '#sizepreset').value === 'custom' && win.__PPCC.state.job.sizePreset === 'custom');
+  type(win, '[data-k="ow"]', '19'); type(win, '[data-k="oh"]', '11');
+  type(win, '[data-k="unit"]', 'm');
+  ok('unit conversion includes independently entered open dimensions', win.__PPCC.state.job.w === .095 && win.__PPCC.state.job.ow === .19 && win.__PPCC.state.job.oh === .11);
+  type(win, '[data-k="mode"]', 'sticker'); type(win, '[data-k="shape"]', 'circle');
+  ok('round sticker picker offers only diameters and Custom', !$(doc, '#sizepreset option[value="a4"]') && !!$(doc, '#sizepreset option[value="circle50"]'));
+  type(win, '#sizepreset', 'circle50');
+  ok('round preset fills 5 cm diameter', win.__PPCC.state.job.unit === 'cm' && win.__PPCC.state.job.diameter === 5);
+  type(win, '[data-k="diameter"]', '6.5');
+  ok('unlisted circle diameter switches to Custom', $(doc, '#sizepreset').value === 'custom' && win.__PPCC.state.job.diameter === '6.5');
+  type(win, '[data-k="shape"]', 'rect');
+  win.__PPCC.state.job = {...win.__PPCC.state.job, unit: 'mm', w: 210, h: 297};
+  delete win.__PPCC.state.job.sizePreset; win.__PPCC.render();
+  ok('older saved dimensions recognized without being rewritten', $(doc, '#sizepreset').value === 'a4' && win.__PPCC.state.job.unit === 'mm' && win.__PPCC.state.job.w === 210);
+  win.__PPCC.state.job.w = 123; win.__PPCC.state.job.h = 234; win.__PPCC.render();
+  ok('older unlisted saved dimensions stay Custom unchanged', $(doc, '#sizepreset').value === 'custom' && win.__PPCC.state.job.w === 123 && win.__PPCC.state.job.h === 234);
+
   // ---------- sign out clears the screen back to auth ----------
   click(win, '[data-view="saved"]'); await wait(20);
   ok('sign-out is reachable from the nav on any screen, not just Settings', !!$(doc, '[data-act="sign-out"]'));

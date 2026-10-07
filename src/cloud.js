@@ -184,6 +184,37 @@
     return `<div class="material-price span2" data-price-for="${esc(m.id)}"><div><span class="price-caption">Purchase price basis</span><div>${text}</div></div>${canEdit() ? `<button class="lnk" data-act="edit-ent" data-ent="materials" data-id="${esc(m.id)}">Edit unit &amp; price</button>` : ''}</div>`;
   }
 
+  // Finished job dimensions; purchased sheet / roll sizes remain in Materials.
+  const SIZE_UNITS = { mm: 1, cm: 10, m: 1000 };
+  const RECT_SIZES = [
+    ['a0', 'A0', 841, 1189], ['a1', 'A1', 594, 841],
+    ['a2', 'A2', 420, 594], ['a3', 'A3', 297, 420],
+    ['a4', 'A4', 210, 297], ['a5', 'A5', 148, 210],
+    ['a6', 'A6', 105, 148], ['a7', 'A7', 74, 105],
+    ['dl', 'DL', 99, 210], ['card', 'Business card', 90, 55],
+    ['card85', 'Business card (85 × 55 mm)', 85, 55],
+    ['square50', 'Square sticker / label', 50, 50],
+    ['square100', 'Square sticker / label', 100, 100],
+    ['rollup85', 'Roll-up banner', 850, 2000],
+    ['rollup90', 'Roll-up banner', 900, 2000],
+    ['banner', 'Banner', 1000, 2000]
+  ];
+  const CIRCLE_SIZES = [25, 30, 40, 50, 60, 75, 100].map(d => ['circle' + d, 'Round sticker', d]);
+  function sizeOptions(j) { return j.mode === 'sticker' && j.shape === 'circle' ? CIRCLE_SIZES : RECT_SIZES; }
+  function selectedSize(j) {
+    if (j.sizePreset === 'custom') return 'custom';
+    const factor = SIZE_UNITS[j.unit] || 1, circle = j.mode === 'sticker' && j.shape === 'circle';
+    const match = sizeOptions(j).find(p => circle
+      ? Math.abs(num(j.diameter) * factor - p[2]) < .001
+      : Math.abs(num(j.w) * factor - p[2]) < .001 && Math.abs(num(j.h) * factor - p[3]) < .001);
+    return match ? match[0] : 'custom';
+  }
+  function sizePickerHTML(j) {
+    const options = [['custom', 'Custom — enter your own size']].concat(sizeOptions(j).map(p =>
+      [p[0], p[1] + ' · ' + (p[3] ? `${p[2] / 10} × ${p[3] / 10}` : `Ø ${p[2] / 10}`) + ' cm']));
+    return `<label class="f span2"><span>Common finished sizes</span><select id="sizepreset">${options.map(p => opt(p[0], p[1], selectedSize(j))).join('')}</select><small>Presets fill the dimensions in cm. Choose Custom or edit the dimensions for your own size.</small></label>`;
+  }
+
   /* ================= views: New calculation ================= */
   function head(title, sub, actions) { return `<header class="pagehead"><div><h1>${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ''}</div><div class="actions">${actions || ''}</div></header>`; }
 
@@ -204,6 +235,7 @@
       ${F.sel('mode', 'Printing method', Object.keys(E.MODES).map((k) => [k, E.MODES[k]]), { r: 1 })}
       ${F.num('qty', j.product === 'NCR' ? 'Quantity (complete sets)' : 'Quantity (pieces)', { ph: '1000' }) + (j.product === 'NCR' ? F.num('setsPerPad', 'Sets per pad / book', { ph: '50', hint: 'Optional. Quantity above is sets; 100 books × 50 sets = 5,000 sets.' }) : '')}
       ${j.mode === 'sticker' ? F.sel('shape', 'Sticker shape', [['rect', 'Rectangle'], ['circle', 'Circle'], ['custom', 'Custom shape']], { r: 1 }) : ''}
+      ${sizePickerHTML(j)}
       ${F.sel('unit', 'Size unit', [['mm', 'mm'], ['cm', 'cm'], ['m', 'meter']], { r: 1 })}
       ${circle ? F.num('diameter', `Diameter (${U_})`) : F.num('w', `Finished width (${U_})`) + F.num('h', `Finished height (${U_})`)}
       ${j.mode === 'sticker' && j.shape === 'custom' ? F.num('cutLen', 'Cut path per piece (mm)', { hint: 'Empty = bounding box perimeter' }) : ''}
@@ -923,6 +955,18 @@
 
   function onField(e) {
     const t = e.target;
+    if (t.id === 'sizepreset') {
+      if (e.type !== 'change') return;
+      const j = state.job, preset = sizeOptions(j).find(p => p[0] === t.value);
+      j.sizePreset = preset ? preset[0] : 'custom';
+      if (preset) {
+        j.unit = 'cm';
+        if (j.mode === 'sticker' && j.shape === 'circle') j.diameter = preset[2] / 10;
+        else { j.w = preset[2] / 10; j.h = preset[3] / 10; }
+        // Open dimensions are independent and may have been entered for a folded job.
+      }
+      render(); return;
+    }
     if (t.dataset.invoiceTarget) { invoiceTargets[t.dataset.invoiceTarget] = t.value; return; }
     if (t.id === 'cmpq') { state.cmp = t.value; paintCompare(); return; }
     if (t.dataset.q) { state.q[t.dataset.q] = t.value; const rs = t.dataset.q === 'saved' ? savedRows() : crudRows(t.dataset.q); $('#crudbody').innerHTML = rs.html; $('#crudcount').textContent = rs.count; return; }
@@ -950,7 +994,19 @@
     }
     if (t.dataset.k) {
       const k = t.dataset.k, v = t.type === 'checkbox' ? t.checked : t.value;
+      if (k === 'unit') {
+        if (e.type !== 'change') return;
+        const factor = (SIZE_UNITS[state.job.unit] || 1) / (SIZE_UNITS[v] || 1);
+        ['w', 'h', 'diameter', 'ow', 'oh'].forEach(key => {
+          const old = state.job[key];
+          if (old !== '' && old != null && Number.isFinite(Number(old))) state.job[key] = Number((Number(old) * factor).toFixed(8));
+        });
+      }
       setPath(state.job, k, v);
+      if (['w', 'h', 'diameter'].includes(k)) {
+        state.job.sizePreset = 'custom';
+        const picker = $('#sizepreset'); if (picker) picker.value = 'custom';
+      }
       if (e.type === 'change' && t.dataset.r) {
         if (k === 'product') { const pm = PRODUCT_MODE[v]; if (pm) state.job.mode = pm; else if (state.job.mode !== 'offset' && state.job.mode !== 'digital') state.job.mode = 'digital'; if (E.BOOK.includes(v)) state.job.sides = 2; if (v === 'NCR' && !state.job.addMaterials.some(r => r.role === 'ncr')) state.job.addMaterials.push({role: 'ncr', materialId: '', qty: '', printed: true, sides: '', colors: '', colorMode: '', wastePct: '', setupWaste: '', finId: '', opQty: '', scales: false}); autoPick(state.job); }
         if (/^addMaterials\.\d+\.role$/.test(k)) { const row = state.job.addMaterials[Number(k.split('.')[1])]; row.qty = v === 'manual' ? 1 : ''; row.printed = true; row.wastePct = ''; row.setupWaste = ''; }

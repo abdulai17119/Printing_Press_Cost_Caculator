@@ -20,6 +20,17 @@ actual rate used, including any press-sheet subdivision. Purchase prices remain
 exactly as entered; no invoice pack sizes or VAT treatment are assumed. A pack-priced
 material with a missing or invalid sheets-per-pack count blocks calculation.
 
+## Common finished sizes
+
+The Job section includes A0–A7, DL, business cards, square labels, roll-up banners
+and a banner preset, all labeled in cm. Circular stickers have diameter presets
+from 2.5 to 10 cm. Choose Custom to enter any unlisted size; editing a preset's
+width, height or diameter also switches to Custom. Changing mm/cm/m converts
+existing dimensions without changing the physical size. Open dimensions for
+folded jobs remain independently editable. Presets describe the finished product;
+purchased paper and roll dimensions remain under Materials. Saved jobs retain
+their dimensions and custom choice.
+
 ## Confirmed NCR purchase prices
 
 Your invoice specifies 500 sheets per pack, 70 × 100 cm:
