@@ -323,6 +323,68 @@ async function run() {
   win.__PPCC.state.job.w = 123; win.__PPCC.state.job.h = 234; win.__PPCC.render();
   ok('older unlisted saved dimensions stay Custom unchanged', $(doc, '#sizepreset').value === 'custom' && win.__PPCC.state.job.w === 123 && win.__PPCC.state.job.h === 234);
 
+  // ---------- NCR quantity entry in books and clear layer controls ----------
+  click(win, '[data-act="new-job"]');
+  type(win, '[data-k="product"]', 'NCR'); type(win, '[data-k="mode"]', 'offset');
+  type(win, '[data-k="materialId"]', 'actual_cb'); type(win, '[data-k="addMaterials.0.materialId"]', 'actual_pink');
+  type(win, '#sizepreset', 'a5');
+  ok('legacy / fresh NCR defaults to sets entry', $(doc, '[data-k="ncrQuantityMode"]').value === 'sets' && !!$(doc, '[data-k="qty"]'));
+  const originalCard = $(doc, '.main-material');
+  ok('original offset controls appear once beside original stock', !!originalCard.querySelector('[data-k="colors"]') && !!originalCard.querySelector('[data-k="plates"]') && $$(doc, '[data-k="sides"]').length === 1);
+  ok('copy card is clearly numbered by part', /Copy 1 · part 2/.test($(doc, '[data-material-index="0"]').textContent));
+  type(win, '[data-k="setsPerPad"]', '50');
+  type(win, '[data-k="ncrQuantityMode"]', 'books');
+  type(win, '[data-k="ncrBooks"]', '20');
+  ok('20 books of 50 serial numbers automatically produce 1000 sets', win.__PPCC.state.job.qty === 1000 && win.__PPCC.state.result.qty === 1000 && win.__PPCC.state.result.ok);
+  const beforeSecondCopy = $(doc, '#ncr-count-summary').textContent;
+  ok('1+1 summary counts 2000 finished sheets', /1 \+ 1/.test(beforeSecondCopy) && /2,000 finished NCR sheets/.test(beforeSecondCopy));
+  click(win, '[data-act="add-material-role"][data-role="ncr"]');
+  type(win, '[data-k="addMaterials.1.materialId"]', win.__PPCC.DB().materials.find(m => m.name === 'JH NCR CF YELLOW 55GSM 70*100').id);
+  ok('1+2 summary counts 3000 sheets with shared serial numbers', /1 \+ 2/.test($(doc, '#ncr-count-summary').textContent) && /3,000 finished NCR sheets/.test($(doc, '#ncr-count-summary').textContent) && /same serial number/.test($(doc, '#ncr-count-summary').textContent));
+  const booksTotal = win.__PPCC.state.result.total;
+  type(win, '[data-k="ncrQuantityMode"]', 'sets');
+  ok('switching from books to sets preserves quantity and cost', Number($(doc, '[data-k="qty"]').value) === 1000 && Math.abs(win.__PPCC.state.result.total - booksTotal) < .001);
+  type(win, '[data-k="qty"]', '525');
+  ok('sets entry describes partial final book', /last book is partial/.test($(doc, '#ncr-count-summary').textContent));
+  type(win, '[data-k="ncrQuantityMode"]', 'books');
+  ok('switching partial sets to books does not silently round quantity', win.__PPCC.state.job.ncrBooks === 10.5 && win.__PPCC.state.job.qty === 525 && !win.__PPCC.state.result.ok);
+  ok('fractional book entry explains whole-number requirement', win.__PPCC.state.result.errors.some(e => e.field === 'ncrBooks' && /whole number/.test(e.msg)));
+  type(win, '[data-k="ncrBooks"]', '10'); type(win, '[data-k="setsPerPad"]', '');
+  ok('books mode requires sets per book and clears stale quantity', win.__PPCC.state.job.qty === '' && !win.__PPCC.state.result.ok && win.__PPCC.state.result.errors.some(e => e.field === 'setsPerPad'));
+  type(win, '[data-k="setsPerPad"]', '50');
+  ok('book quantity recovers when serial count entered', win.__PPCC.state.job.qty === 500 && win.__PPCC.state.result.ok);
+  const snapshot = JSON.parse(JSON.stringify(win.__PPCC.state.job));
+  win.__PPCC.state.job = snapshot; win.__PPCC.render();
+  ok('book mode and derived quantity survive saved snapshot reload', $(doc, '[data-k="ncrQuantityMode"]').value === 'books' && Number($(doc, '[data-k="ncrBooks"]').value) === 10 && win.__PPCC.state.job.qty === 500);
+  delete win.__PPCC.state.job.ncrQuantityMode; delete win.__PPCC.state.job.ncrBooks;
+  win.__PPCC.render();
+  ok('older snapshots preserve sets without needing book count', $(doc, '[data-k="ncrQuantityMode"]').value === 'sets' && win.__PPCC.state.job.qty === 500 && win.__PPCC.state.result.ok);
+  type(win, '[data-k="product"]', 'Business Card');
+  ok('non-NCR jobs retain standard quantity and no NCR books controls', !!$(doc, '[data-k="qty"]') && !$(doc, '[data-k="ncrBooks"]') && !$(doc, '#ncr-count-summary'));
+
+  // ---------- Supplied equipment import, rate requirements and repeat import ----------
+  click(win, '[data-view="settings"]');
+  const beforeMachines=mock._db.machines.length, beforeFin=mock._db.finishing_operations.length;
+  const beforeSaved=JSON.stringify(mock._db.calculations);
+  ok('admin can review and import provided equipment', !!$(doc,'[data-act="import-equipment"]') && /9 printing machines and 19 finishing/.test(doc.body.textContent));
+  click(win, '[data-act="import-equipment"]'); await wait(250);
+  ok('equipment import creates 9 printing and 19 finishing records', mock._db.machines.length===beforeMachines+9 && mock._db.finishing_operations.length===beforeFin+19);
+  const gto=mock._db.machines.find(m=>m.name.includes('697531'));
+  ok('Heidelberg supplied capacity and colours saved', !!gto && gto.max_sheet_width_mm===360 && gto.max_sheet_height_mm===520 && gto.color_units===2);
+  ok('imported machine operating rates and speed remain unconfirmed', gto && gto.hourly_rate===null && gto.speed===null);
+  ok('both spiral binders have separate equipment records', mock._db.finishing_operations.filter(m=>/^Spiral binding machine/.test(m.name)).length===2);
+  ok('ambiguous machines marked for classification', mock._db.finishing_operations.filter(m=>/Needs classification/.test(m.notes||'')).length===2);
+  ok('import keeps saved job history unchanged', JSON.stringify(mock._db.calculations)===beforeSaved);
+  gto.hourly_rate=85;
+  const localGto=win.__PPCC.DB().machines.find(m=>m.id===gto.id);localGto.hourlyRate=85;
+  click(win, '[data-act="import-equipment"]'); await wait(250);
+  ok('repeat import preserves counts and edited rates', mock._db.machines.length===beforeMachines+9 && mock._db.finishing_operations.length===beforeFin+19 && gto.hourly_rate===85);
+  click(win, '[data-view="machines"]');
+  ok('machine list displays supplied capacity and colour units', /36 × 52 cm/.test(doc.body.textContent) && /2 colours\/pass/.test(doc.body.textContent));
+  click(win, `[data-act="edit-ent"][data-id="${gto.id}"]`);
+  ok('capacity can be edited and saved through machine form', Number($(doc,'[data-d="maxSheetW"]').value)===360 && Number($(doc,'[data-d="maxSheetH"]').value)===520);
+  click(win, '[data-act="close"]');
+
   // ---------- sign out clears the screen back to auth ----------
   click(win, '[data-view="saved"]'); await wait(20);
   ok('sign-out is reachable from the nav on any screen, not just Settings', !!$(doc, '[data-act="sign-out"]'));

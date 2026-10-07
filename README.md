@@ -20,6 +20,20 @@ actual rate used, including any press-sheet subdivision. Purchase prices remain
 exactly as entered; no invoice pack sizes or VAT treatment are assumed. A pack-priced
 material with a missing or invalid sheets-per-pack count blocks calculation.
 
+## NCR books and sets entry
+
+Choose complete sets or books/pads in the Job section. For example, 20 books
+with 50 serial numbers per book produce 1,000 sets. An NCR 1 + 2 job has 3,000
+finished cut forms before waste; parent-sheet requirements still come from
+imposition. Books and sets per book must be positive whole numbers. Switching to
+books preserves the existing set quantity; a partial book requires adjusting the
+book count or continuing in sets mode. Existing saved jobs default to sets.
+
+Original printing settings now sit with the original stock in Materials. Copy
+cards show Copy 1 / part 2, Copy 2 / part 3, and their printing overrides. Section
+3 selects the shared machine. All parts in a set share the same serial number;
+this summary does not automatically add numbering or binding charges.
+
 ## Common finished sizes
 
 The Job section includes A0–A7, DL, business cards, square labels, roll-up banners
@@ -160,3 +174,32 @@ Euro Premium Eggshell, AA A4 Paper and Mounting Tape. It also listed FB 350 and
 Food Board 350GSM separately. Confirm these against the actual database.
 There is still no purchase-invoice entry screen. Demo rates are examples, not
 verified production prices.
+
+## Your production equipment
+
+For an existing Supabase database, first run `equipment-migration.sql` in the
+Supabase SQL editor. For a new database the updated `schema.sql` includes these
+fields. Replace `index.html`, sign in as admin and open Settings → Your production
+equipment → Import your equipment. This adds 9 printing machines and 19 finishing
+equipment records with unconfirmed rates. Repeating the import skips exact names
+and inventory IDs, preserving edits. Existing generic records are not merged
+automatically. Partially completed imports can be retried.
+
+The six Heidelberg presses have the supplied 36 × 52 cm capacity and 1/2-colour
+units. With no manual press size, purchased parent sheets are split into an equal
+grid that fits the machine, choosing the fewest subdivisions (rotating allowed).
+For example, 70 × 100 cm stock becomes four 35 × 50 cm press sheets. Per-sheet/pack
+prices are divided by this count. This is a simple equal-grid cutting plan, not a
+mixed cutting optimizer; confirm actual margins/gripper and use explicit press
+size/divisor overrides for another plan. Each printed NCR copy uses its own stock
+with the same press capacity. Colour passes already follow ceil(colours / units),
+and affect impressions and run time. Manual sheets larger than the press are blocked.
+
+No Canon, roll-printer or finishing dimensions were inferred beyond the supplied
+inventory. Imported printers require an operating rate and speed; digital printers
+also require the selected click cost. Enter 0 explicitly only for intentionally
+excluded costs. Finishing entries start with provisional hourly pricing and no
+rate; choose the method/rate before use. Film and boards remain separate materials.
+Raab Paper Whale and Hosner Pion Machine cannot be used until their function is
+clarified and the Needs classification note is removed. This source update does
+not modify the live database until the migration and import are run.

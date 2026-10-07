@@ -192,6 +192,21 @@
     return (isBook || !mat || materialMode(mat) !== 'roll' || hasPress) ? 'sheet' : 'roll';
   }
 
+  function pressSheet(job, mat, mach) {
+    if (num(job.pressW) > 0 && num(job.pressH) > 0) return {w:num(job.pressW),h:num(job.pressH),divisor:Math.max(num(job.parentDivisor,1),1),auto:false};
+    const w = num(mat.sheetW), h = num(mat.sheetH), cw = num(mach && mach.maxSheetW), ch = num(mach && mach.maxSheetH);
+    if (!(w > 0 && h > 0 && cw > 0 && ch > 0)) return {w,h,divisor:Math.max(num(job.parentDivisor,1),1),auto:false};
+    const grids = [[cw,ch],[ch,cw]].map(([a,b]) => {
+      const across = Math.max(1,Math.ceil(w/a)), down = Math.max(1,Math.ceil(h/b));
+      return {w:w/across,h:h/down,divisor:across*down,auto:true,across,down};
+    });
+    return grids.sort((a,b) => a.divisor-b.divisor)[0];
+  }
+  function fitsPress(w,h,mach) {
+    const a = num(mach.maxSheetW), b = num(mach.maxSheetH);
+    return !(a > 0 && b > 0) || (w <= a && h <= b) || (w <= b && h <= a);
+  }
+
   function validate(job, db) {
     const errors = [], warnings = [];
     const err = (field, msg) => errors.push({ field, msg });
@@ -210,7 +225,9 @@
     const circle = job.mode === 'sticker' && job.shape === 'circle';
     const isBook = BOOK.includes(job.product);
 
-    chk(job, 'setsPerPad', 'Sets per pad/book', { int: true, gt: 0 });
+    const booksEntry = job.product === 'NCR' && job.ncrQuantityMode === 'books';
+    if (booksEntry) chk(job, 'ncrBooks', 'Number of books/pads', { required: true, int: true, gt: 0 });
+    chk(job, 'setsPerPad', 'Sets per pad/book', { required: booksEntry, int: true, gt: 0 });
     chk(job, 'qty', 'Quantity', { required: true, int: true, gt: 0 });
     if (!(job.unit in UNIT_MM)) err('unit', 'Choose mm, cm or meter.');
     if (circle) chk(job, 'diameter', 'Diameter', { required: true, gt: 0 });
@@ -279,6 +296,17 @@
     if (!job.machineId) err('machineId', 'Choose a machine.'); else if (!mach) err('machineId', 'This machine no longer exists.');
 
     if (mach) {
+      if (String(mach.notes || '').includes('Inventory:')) {
+        if (isBlank(mach.hourlyRate)) err('machineId', `Enter the operating hourly rate for "${mach.name}" in Machines (0 only if intentionally excluded).`);
+        if (!(num(isBlank(job.speed) ? mach.speed : job.speed) > 0)) err('machineId', `Enter the production speed for "${mach.name}" or override it in this job.`);
+        if (mach.type === 'digital') {
+          const key = job.colorMode === 'bw' ? 'clickBW' : 'clickColor';
+          if (isBlank(job[key]) && isBlank(mach[key])) err('machineId', `Enter the selected digital click cost for "${mach.name}".`);
+        }
+      }
+      ['maxSheetW','maxSheetH'].forEach(k => { if (!isBlank(mach[k]) && !(num(mach[k]) > 0)) err('machineId','Machine sheet capacity must be positive.'); });
+      if (isBlank(mach.maxSheetW) !== isBlank(mach.maxSheetH)) err('machineId','Enter both machine sheet capacity dimensions.');
+
       const okTypes = MODE_MACHINES[job.mode] || [];
       if (!okTypes.includes(mach.type)) err('machineId', `${MODES[job.mode] || 'This'} printing needs a ${okTypes.map((t) => MACHINE_TYPES[t]).join(' or ').toLowerCase()}.`);
       ['hourlyRate', 'setupRate', 'speed', 'costPerSqm', 'costPerImpression', 'clickColor', 'clickBW'].forEach((k) => {
@@ -291,7 +319,9 @@
       if (!isBlank(mat.purchaseCost) && (!isNumeric(mat.purchaseCost) || Number(mat.purchaseCost) < 0)) err('materialId', `Material "${mat.name}" has an invalid price. Fix it in Materials.`);
       const hasPress = num(job.pressW) > 0 && num(job.pressH) > 0;
       const kind0 = layoutKind(job, mat, isBook);
-      const sw0 = hasPress ? num(job.pressW) : num(mat.sheetW), sh0 = hasPress ? num(job.pressH) : num(mat.sheetH);
+      const cut = pressSheet(job,mat,mach);
+      const sw0 = cut.w, sh0 = cut.h;
+      if (mach && kind0 === 'sheet' && !fitsPress(sw0,sh0,mach)) err('pressW', 'The press sheet exceeds the selected machine capacity. Reduce the press sheet dimensions.');
       if (materialMode(mat) === 'unknown' && !hasPress) err('materialId', `Material "${mat.name}" has no sheet size or roll width yet. Enter it in Materials (or Settings → Material costs).`);
       else if (kind0 === 'sheet' && !(sw0 > 0 && sh0 > 0)) err('materialId', `Material "${mat.name}" has no sheet size yet. Enter its width and height in Materials (or Settings → Material costs).`);
       const kind = layoutKind(job, mat, isBook);
@@ -299,10 +329,18 @@
       if (isBook && materialMode(mat) === 'roll' && !hasPress) err('materialId', 'Booklets and books need sheet material (or a press sheet size).');
       else if ((costingType === 'offset' || costingType === 'digital') && kind === 'roll') err('materialId', 'Offset and digital sheet printing need sheet material. Pick a sheet material, or enter a press sheet size.');
       else if (!errors.some((e) => e.field === 'materialId')) {
-        const sw = hasPress ? num(job.pressW) : num(mat.sheetW), sh = hasPress ? num(job.pressH) : num(mat.sheetH);
-        if (!materialUnitCost(mat, kind, sw, sh, num(job.parentDivisor, 1))) err('materialId', `Material "${mat.name}" cannot be priced for ${kind === 'roll' ? 'a roll layout' : 'a sheet layout'} (missing roll length, roll width or sheet size).`);
+        const sw = cut.w, sh = cut.h;
+        if (!materialUnitCost(mat, kind, sw, sh, cut.divisor)) err('materialId', `Material "${mat.name}" cannot be priced for ${kind === 'roll' ? 'a roll layout' : 'a sheet layout'} (missing roll length, roll width or sheet size).`);
       }
     }
+    const operations = [{id:job.lamFinId,field:'lamFinId'},{id:job.cutFinId,field:'cutFinId'}]
+      .concat((job.finishing || []).map((r,i) => ({id:r.finId,field:`finishing.${i}.finId`})))
+      .concat((job.addMaterials || []).map((r,i) => ({id:r.finId,field:`addMaterials.${i}.finId`})));
+    operations.forEach(({id,field}) => {
+      const op = find(db.finishing,id); if (!op) return;
+      if (isBlank(op.rate)) err(field, `Enter a confirmed rate for "${op.name}" in Finishing.`);
+      if (String(op.notes || '').includes('Needs classification')) err(field, `Clarify "${op.name}", choose its pricing method and remove "Needs classification" from its notes before using it.`);
+    });
     if (mach && job.mode === 'offset' && !(num(job.colors) >= 1)) err('colors', 'Offset printing needs at least 1 colour.');
     return { errors, warnings };
   }
@@ -349,9 +387,11 @@
     const costing = mach.type === 'offset' ? 'offset' : mach.type === 'digital' ? 'digital' : 'area';
     const hasPress = num(job.pressW) > 0 && num(job.pressH) > 0;
     const kind = layoutKind(job, mat, isBook);
-    const sheetW = hasPress ? num(job.pressW) : num(mat.sheetW), sheetH = hasPress ? num(job.pressH) : num(mat.sheetH);
-    const divisor = Math.max(num(job.parentDivisor, 1), 1);
+    const cut = pressSheet(job,mat,mach);
+    const sheetW = cut.w, sheetH = cut.h;
+    const divisor = cut.divisor;
     const uc = materialUnitCost(mat, kind, sheetW, sheetH, divisor);
+    res.pressSheet = cut;
     const rollW = num(mat.rollWidth);
 
     /* ---- waste settings (by production method, per-job overrides) ---- */
@@ -631,7 +671,7 @@
 
   return {
     version: '1.1', UNIT_MM, PRODUCT_TYPES, MODES, MODE_MACHINES, FIN_METHODS, MAT_UNITS, MAT_CATS, MACHINE_TYPES, MACHINE_FIELDS, SPEED_UNIT, CATEGORIES, BOOK,
-    defaultSettings, newJob, validate, calculate, compare, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
+    defaultSettings, newJob, validate, calculate, compare, pressSheet, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
     util: { num, r2, f, m, isBlank, isNumeric, clone, find }
   };
 });

@@ -50,9 +50,11 @@ create table machines (
   id                   uuid primary key default gen_random_uuid(),
   name                 text not null,
   machine_type         text not null check (machine_type in ('offset','digital','large_format','uv','laminator','guillotine','cutting_plotter','die_cutter','laser')),
-  hourly_rate          numeric(14,4) not null default 0 check (hourly_rate >= 0),
+  hourly_rate          numeric(14,4) default null check (hourly_rate >= 0),
   setup_rate           numeric(14,4) check (setup_rate >= 0),            -- NULL = use hourly_rate
   speed                numeric(14,4) check (speed is null or speed > 0),  -- impressions/h (offset, digital) or m²/h (large format)
+  max_sheet_width_mm   numeric(10,2) check (max_sheet_width_mm > 0),
+  max_sheet_height_mm  numeric(10,2) check (max_sheet_height_mm > 0),
   color_units          integer check (color_units is null or color_units >= 1),  -- offset: colours printed per pass
   click_color          numeric(14,4) check (click_color >= 0),            -- digital only
   click_bw             numeric(14,4) check (click_bw >= 0),               -- digital only
@@ -66,7 +68,7 @@ create table finishing_operations (
   id             uuid primary key default gen_random_uuid(),
   name           text not null,
   pricing_method text not null check (pricing_method in ('per_piece','per_sheet','per_meter','per_sqm','per_hour','fixed')),
-  rate           numeric(14,4) not null check (rate >= 0),
+  rate           numeric(14,4) check (rate >= 0),
   setup_cost     numeric(14,4) not null default 0 check (setup_cost >= 0),   -- fixed setup cost per job
   min_charge     numeric(14,4) not null default 0 check (min_charge >= 0),
   notes          text,

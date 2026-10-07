@@ -17,7 +17,7 @@
   /* ================= field mapping: snake_case DB rows <-> the app's camelCase shape ================= */
   const MAPS = {
     materials: [['id'], ['name'], ['category'], ['gsm_thickness', 'gsm'], ['sheet_width_mm', 'sheetW'], ['sheet_height_mm', 'sheetH'], ['roll_width_mm', 'rollWidth'], ['roll_length_m', 'rollLength'], ['unit'], ['pack_size', 'packSize'], ['purchase_cost', 'purchaseCost'], ['min_charge', 'minCharge'], ['supplier'], ['notes'], ['is_demo', 'demo']],
-    machines: [['id'], ['name'], ['machine_type', 'type'], ['hourly_rate', 'hourlyRate'], ['setup_rate', 'setupRate'], ['speed'], ['color_units', 'colorUnits'], ['click_color', 'clickColor'], ['click_bw', 'clickBW'], ['cost_per_impression', 'costPerImpression'], ['cost_per_sqm', 'costPerSqm'], ['notes'], ['is_demo', 'demo']],
+    machines: [['id'], ['name'], ['machine_type', 'type'], ['hourly_rate', 'hourlyRate'], ['setup_rate', 'setupRate'], ['speed'], ['color_units', 'colorUnits'], ['max_sheet_width_mm', 'maxSheetW'], ['max_sheet_height_mm', 'maxSheetH'], ['click_color', 'clickColor'], ['click_bw', 'clickBW'], ['cost_per_impression', 'costPerImpression'], ['cost_per_sqm', 'costPerSqm'], ['notes'], ['is_demo', 'demo']],
     finishing: [['id'], ['name'], ['pricing_method', 'method'], ['rate'], ['setup_cost', 'setupCost'], ['min_charge', 'minCharge'], ['notes'], ['is_demo', 'demo']],
     labor: [['id'], ['category'], ['hourly_cost', 'hourlyCost'], ['notes'], ['is_demo', 'demo']]
   };
@@ -154,7 +154,7 @@
   const F = {
     num: (k, label, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="number" step="any" inputmode="decimal" value="${esc(val(k))}" placeholder="${esc(o.ph == null ? '' : o.ph)}"><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
     txt: (k, label, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="text" value="${esc(val(k))}" placeholder="${esc(o.ph || '')}"><i class="err" data-err="${k}"></i></label>`; },
-    sel: (k, label, options, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><select data-k="${k}"${o.r ? ' data-r="1"' : ''}${o.dis ? ' disabled' : ''}>${options.map((x) => opt(x[0], x[1], val(k) === '' && k.endsWith('.role') ? 'manual' : val(k) === '' && k.endsWith('.feed') ? 'web' : val(k))).join('')}</select><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
+    sel: (k, label, options, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><select data-k="${k}"${o.r ? ' data-r="1"' : ''}${o.dis ? ' disabled' : ''}>${options.map((x) => opt(x[0], x[1], val(k) === '' && k === 'ncrQuantityMode' ? 'sets' : val(k) === '' && k.endsWith('.role') ? 'manual' : val(k) === '' && k.endsWith('.feed') ? 'web' : val(k))).join('')}</select><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
     chk: (k, label) => `<label class="chk"><input type="checkbox" data-k="${k}"${getPath(state.job, k) ? ' checked' : ''}> ${label}</label>`
   };
   const matLabel = (m) => { const n = matNeeds(m); return m.name + (n.price ? '  — needs price' : n.size ? '  — needs size' : ''); };
@@ -209,6 +209,25 @@
       : Math.abs(num(j.w) * factor - p[2]) < .001 && Math.abs(num(j.h) * factor - p[3]) < .001);
     return match ? match[0] : 'custom';
   }
+  function ncrQuantityHTML(j) {
+    const books = j.ncrQuantityMode === 'books';
+    return F.sel('ncrQuantityMode', 'Enter quantity as', [['sets', 'Complete sets / serial numbers'], ['books', 'Books / pads']], {r: 1})
+      + (books ? F.num('ncrBooks', 'Number of books / pads', {ph: '20'}) : F.num('qty', 'Quantity (complete sets)', {ph: '1000'}))
+      + F.num('setsPerPad', 'Serial numbers / sets per book', {ph: '50', hint: books ? 'Required. Each serial number is one original plus its copies.' : 'Optional for loose sets. Enter this to show the number of books.'})
+      + '<div class="notice info span2" id="ncr-count-summary"></div>';
+  }
+  function ncrCountHTML(j) {
+    const copies = (j.addMaterials || []).filter(r => r.role === 'ncr').length;
+    const qty = Number(j.qty), perBook = Number(j.setsPerPad);
+    const configuration = `NCR 1 + ${copies} · ${copies + 1} ${copies ? 'parts' : 'part'} per set`;
+    if (j.ncrQuantityMode === 'books' && !(Number.isInteger(Number(j.ncrBooks)) && Number(j.ncrBooks) > 0)) return configuration + ' · Enter a whole number of books / pads above zero.';
+    if (!(Number.isInteger(qty) && qty > 0)) return configuration + ' · Enter a valid quantity.';
+    const pads = Number.isInteger(perBook) && perBook > 0 ? Math.ceil(qty / perBook) : 0;
+    return `${configuration}<br><strong>${U.f(qty)} complete sets · ${U.f(qty * (copies + 1))} finished NCR sheets before waste</strong>`
+      + (pads ? `<br>${U.f(pads)} books / pads · ${U.f(perBook)} serial numbers per book${qty % perBook ? ' (last book is partial)' : ''}` : '')
+      + '<br>All parts within a set share the same serial number. Finished sheets are cut forms, not purchased parent sheets.';
+  }
+
   function sizePickerHTML(j) {
     const options = [['custom', 'Custom — enter your own size']].concat(sizeOptions(j).map(p =>
       [p[0], p[1] + ' · ' + (p[3] ? `${p[2] / 10} × ${p[3] / 10}` : `Ø ${p[2] / 10}`) + ' cm']));
@@ -233,7 +252,7 @@
       ${F.txt('name', 'Job name', { cls: 'span2', ph: 'e.g. Menu cards for client job 1042' })}
       ${F.sel('product', 'Product type', E.PRODUCT_TYPES.map((p) => [p, p]), { r: 1 })}
       ${F.sel('mode', 'Printing method', Object.keys(E.MODES).map((k) => [k, E.MODES[k]]), { r: 1 })}
-      ${F.num('qty', j.product === 'NCR' ? 'Quantity (complete sets)' : 'Quantity (pieces)', { ph: '1000' }) + (j.product === 'NCR' ? F.num('setsPerPad', 'Sets per pad / book', { ph: '50', hint: 'Optional. Quantity above is sets; 100 books × 50 sets = 5,000 sets.' }) : '')}
+      ${j.product === 'NCR' ? ncrQuantityHTML(j) : F.num('qty', 'Quantity (pieces)', {ph: '1000'})}
       ${j.mode === 'sticker' ? F.sel('shape', 'Sticker shape', [['rect', 'Rectangle'], ['circle', 'Circle'], ['custom', 'Custom shape']], { r: 1 }) : ''}
       ${sizePickerHTML(j)}
       ${F.sel('unit', 'Size unit', [['mm', 'mm'], ['cm', 'cm'], ['m', 'meter']], { r: 1 })}
@@ -241,19 +260,19 @@
       ${j.mode === 'sticker' && j.shape === 'custom' ? F.num('cutLen', 'Cut path per piece (mm)', { hint: 'Empty = bounding box perimeter' }) : ''}
       ${circle ? '' : F.num('ow', `Open width (${U_})`, { hint: isBook() ? 'Empty = 2 × width (spread)' : 'Only if folded / opened up' }) + F.num('oh', `Open height (${U_})`)}
       ${isBook() ? F.num('pages', 'Number of pages', { ph: '16', hint: 'Multiple of 4' }) : ''}
-      ${F.sel('sides', 'Number of sides', [['1', '1 side'], ['2', '2 sides']], { dis: isBook(), hint: isBook() ? 'Booklets print both sides' : '' })}
+      ${j.product === 'NCR' ? '' : F.sel('sides', 'Number of sides', [['1', '1 side'], ['2', '2 sides']], { dis: isBook(), hint: isBook() ? 'Booklets print both sides' : '' })}
       ${F.num('bleed', 'Bleed (mm)', { ph: '3' })}
       <label class="f span2"><span>Notes</span><textarea data-k="notes" placeholder="Anything worth remembering about this job">${esc(j.notes)}</textarea></label>
     </div></section>`;
 
     const matOpts = [['', '— choose material —']].concat(DB.materials.map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
     const machOpts = [['', '— choose machine —']].concat(DB.machines.filter((m) => E.MODE_MACHINES[j.mode].includes(m.type)).map((m) => [m.id, m.name]));
-    const layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · first part' : 'Main printing material'}</h4><div class="grid g2">
+    let layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · part 1' : 'Main printing material'}</h4><div class="grid g2">
       ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1 })}${materialPriceHTML(mat)}
       </div><details class="adv" data-panel="main-layout"><summary>Layout &amp; sheet cutting <span>${kind === 'roll' ? 'Roll' : 'Sheet'}</span></summary><div class="grid" style="margin-top:12px">
       ${kind === 'sheet' ? F.num('margin', 'Sheet margin, each edge (mm)', { hint: 'Not printable' }) + F.num('gripper', 'Gripper edge (mm)', { hint: 'Extra, one edge' }) : F.num('rollEdge', 'Roll edge margin, each side (mm)')}
       ${F.num('gutter', 'Gap between pieces (mm)')}
-      ${kind === 'sheet' ? F.num('pressW', 'Press sheet width (mm)', { ph: mat && mat.sheetW ? mat.sheetW : '' }) + F.num('pressH', 'Press sheet height (mm)', { ph: mat && mat.sheetH ? mat.sheetH : '' }) + F.num('parentDivisor', 'Press sheets per purchased sheet', { hint: 'Only for materials priced per sheet/pack' }) : ''}
+      ${kind === 'sheet' ? F.num('pressW', 'Press sheet width (mm)', { ph: mat && mat.sheetW ? mat.sheetW : '' }) + F.num('pressH', 'Press sheet height (mm)', { ph: mat && mat.sheetH ? mat.sheetH : '' }) + F.num('parentDivisor', 'Press sheets per purchased sheet', { hint: 'Used with a manual press sheet size. Blank press dimensions use the machine capacity to cut the purchased sheet automatically.' }) : ''}
       </div></details></div>`;
 
     let printFields = '';
@@ -269,7 +288,10 @@
       printFields = F.num('inkSqm', `Ink cost per m² (${cur()})`, { ph: P.areaInkPerSqm }) + F.num('machineSqm', `Machine cost per m² (${cur()})`, { ph: mach ? mach.costPerSqm : '' })
         + F.num('setupHours', 'Setup time (hours)', { ph: P.setupHours[j.mode] }) + F.num('speed', 'Machine speed (m²/h)', { ph: mach ? mach.speed : '' });
     }
-    const printCard = `<section class="card"><h3>3 · Printing <small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid g2">${F.sel('machineId', 'Printing machine', machOpts, {r: 1})}${printFields}</div>
+    if (j.product === 'NCR') {
+      layoutCard = layoutCard.replace('</div><details', `<h5 class="span2">Original printing settings · ${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital' : 'Area based'}</h5>${F.sel('sides', 'Original printed sides', [['1', '1 side'], ['2', '2 sides']])}${printFields}<p class="hint span2">Copies use these settings unless overridden in their cards. The shared machine is selected in section 3.</p></div><details`);
+    }
+    const printCard = `<section class="card"><h3>3 · Printing <small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid g2">${F.sel('machineId', 'Printing machine', machOpts, {r: 1})}${j.product === 'NCR' ? '' : printFields}</div>
       <p class="hint">Empty boxes use the rate from the Machines database or Settings (shown in grey). Type a number to override it for this job only.</p></section>`;
 
     const wasteCard = `<details class="adv" data-panel="main-waste"><summary>Main material waste <span>Defaults: ${WS.pct}%</span></summary><div class="grid" style="margin-top:12px">
@@ -312,7 +334,7 @@
 
       const mm = find(DB.materials, r.materialId), b = mm ? E.matBasis(mm) : null, k = `addMaterials.${i}`, role = r.role || 'manual';
       const op = find(DB.finishing, r.finId), auto = role !== 'manual';
-      const title = role === 'ncr' ? `Copy ${j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length}` : (roles.find(x => x[0] === role) || roles[0])[1];
+      const title = role === 'ncr' ? `Copy ${j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length} · part ${1 + j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length}` : (roles.find(x => x[0] === role) || roles[0])[1];
       return `<div class="material-layer" data-material-index="${i}"><h4>${esc(title)}<button class="btn sm" data-act="del" data-list="addMaterials" data-i="${i}" aria-label="Remove ${esc(title)}">Remove</button></h4><div class="grid g2">
         ${F.sel(k + '.role', 'Purpose', roles, {r: 1})}
         ${F.sel(k + '.materialId', 'Stock', addMatOpts, {r: 1})}${materialPriceHTML(mm)}
@@ -387,6 +409,7 @@
     if (L.kind === 'sheet') {
       rows.push(['Pieces per sheet', `${L.across} across × ${L.down} down = <b>${L.ups}</b> (orientation ${L.orientation}: ${L.pw} × ${L.ph} mm)`]);
       rows.push(['Other orientation', `${L.orientation === 'A' ? 'B' : 'A'}: ${L[L.orientation === 'A' ? 'B' : 'A'].across} × ${L[L.orientation === 'A' ? 'B' : 'A'].down} = ${L[L.orientation === 'A' ? 'B' : 'A'].ups}`]);
+      if (r.pressSheet && r.pressSheet.auto) rows.push(['Automatic press-sheet cutting', `${r.pressSheet.w / 10} × ${r.pressSheet.h / 10} cm · ${r.pressSheet.divisor} press sheets per purchased parent sheet`]);
       rows.push(['Printable area', `${U.f(L.printW)} × ${U.f(L.printH)} mm of ${U.f(L.sheetW)} × ${U.f(L.sheetH)} mm (${U.f(L.utilisation, 1)}% of the sheet is finished product)`]);
       if (L.flats > 1) rows.push(['Designs / flats', `${L.flats} (${s.pages} pages ÷ 4), ${L.goodPerFlat} sheets each${L.openAuto ? '; open size taken as 2 × width' : ''}`]);
     } else {
@@ -442,12 +465,17 @@
     box.innerHTML = `<table class="tbl tight"><thead><tr><th class="n">Quantity</th><th class="n">Total cost</th><th class="n">Cost / piece</th><th></th></tr></thead><tbody>${rows.map((x) => x.ok ? `<tr><td class="n">${U.f(x.qty)}</td><td class="n">${money(x.total)}</td><td class="n">${perPieceFmt(x.perPiece)}</td><td style="width:70px"><span class="bar" style="width:${Math.max(3, (x.perPiece / max) * 60).toFixed(0)}px"></span></td></tr>` : `<tr><td class="n">${U.f(x.qty)}</td><td colspan="3" class="err">${esc(x.errors[0] ? x.errors[0].msg : 'Cannot calculate')}</td></tr>`).join('')}</tbody></table><p class="hint">Rows ticked “Scales” grow with the quantity; other manual hours, quantities and costs stay fixed.</p>`;
   }
   function recalc() {
+    const j = state.job;
+    if (j.product === 'NCR' && j.ncrQuantityMode === 'books') {
+      j.qty = isBlank(j.ncrBooks) || isBlank(j.setsPerPad) ? '' : Number(j.ncrBooks) * Number(j.setsPerPad);
+    }
+    const count = $('#ncr-count-summary'); if (count) count.innerHTML = ncrCountHTML(j);
     const r = E.calculate(state.job, DB);
     state.result = r;
     const box = $('#results'); if (!box) return;
     box.innerHTML = resultsHTML(r);
     paintErrors(r); paintCompare();
-    const mini = $('#mini'); if (mini) mini.innerHTML = r.ok ? `<span>Total production cost</span><b>${money(r.total)}</b><span>Per piece <b style="font-size:16px">${perPieceFmt(r.perPiece)}</b></span>` : '<span>Total production cost</span><b>—</b><span>Fix the highlighted fields</span>';
+    const mini = $('#mini'); if (mini) mini.innerHTML = r.ok ? `<span>Total production cost</span><b>${money(r.total)}</b><span>${j.product === 'NCR' ? 'Per complete set' : 'Per piece'} <b style="font-size:16px">${perPieceFmt(r.perPiece)}</b></span>` : '<span>Total production cost</span><b>—</b><span>Fix the highlighted fields</span>';
   }
 
   /* ================= saving a calculation: the real relational write ================= */
@@ -545,6 +573,7 @@
       sub: 'Only the fields that matter for each machine type are shown when you edit it. Shared with everyone signed in.',
       cols: [
         { h: 'Machine', f: (r) => `<b>${esc(r.name)}</b>${demoTag(r)}` }, { h: 'Type', f: (r) => esc(E.MACHINE_TYPES[r.type] || r.type) },
+        { h: 'Sheet capacity / colours', f:r => `${num(r.maxSheetW) > 0 ? `${num(r.maxSheetW)/10} × ${num(r.maxSheetH)/10} cm` : '—'}${r.type === 'offset' ? ` · ${num(r.colorUnits)||'?'} colours/pass` : ''}` },
         { h: 'Hourly rate', n: 1, f: (r) => nf(r.hourlyRate) }, { h: 'Setup rate', n: 1, f: (r) => (isBlank(r.setupRate) ? '<small>= hourly</small>' : nf(r.setupRate)) },
         { h: 'Speed', n: 1, f: (r) => (isBlank(r.speed) ? '—' : `${U.f(num(r.speed))} <small>${esc(E.SPEED_UNIT[r.type] || '')}</small>`) },
         { h: 'Cost / m²', n: 1, f: (r) => (E.MACHINE_FIELDS[r.type].includes('costPerSqm') ? nf(r.costPerSqm, 4) : '') },
@@ -583,8 +612,8 @@
     }
     if (key === 'machines') {
       const fl = E.MACHINE_FIELDS[d.type] || [];
-      const map = { hourlyRate: n('hourlyRate', `Hourly rate (${cur()})`, { req: 1 }), setupRate: n('setupRate', `Setup rate (${cur()} / hour)`, { hint: 'Empty = same as hourly rate' }), speed: n('speed', `Speed (${E.SPEED_UNIT[d.type] || 'per hour'})`), colorUnits: n('colorUnits', 'Colours per pass (print units)', { hint: 'A 4-colour press prints CMYK in one pass' }), clickColor: n('clickColor', `Colour click cost (${cur()})`), clickBW: n('clickBW', `B&W click cost (${cur()})`), costPerImpression: n('costPerImpression', `Cost per impression (${cur()})`), costPerSqm: n('costPerSqm', `Cost per m² (${cur()})`) };
-      return [{ k: 'name', label: 'Machine name', type: 'text', req: 1, cls: 'span2' }, { k: 'type', label: 'Machine type', type: 'select', options: Object.keys(E.MACHINE_TYPES).map((k) => [k, E.MACHINE_TYPES[k]]), r: 1, cls: 'span2' }].concat(fl.map((k) => map[k])).concat([{ k: 'notes', label: 'Notes', type: 'text', cls: 'span2' }]);
+      const map = { maxSheetW:n('maxSheetW','Maximum sheet width (mm)'), maxSheetH:n('maxSheetH','Maximum sheet height (mm)'), hourlyRate: n('hourlyRate', `Hourly rate (${cur()})`, { req: 1 }), setupRate: n('setupRate', `Setup rate (${cur()} / hour)`, { hint: 'Empty = same as hourly rate' }), speed: n('speed', `Speed (${E.SPEED_UNIT[d.type] || 'per hour'})`), colorUnits: n('colorUnits', 'Colours per pass (print units)', { hint: 'A 4-colour press prints CMYK in one pass' }), clickColor: n('clickColor', `Colour click cost (${cur()})`), clickBW: n('clickBW', `B&W click cost (${cur()})`), costPerImpression: n('costPerImpression', `Cost per impression (${cur()})`), costPerSqm: n('costPerSqm', `Cost per m² (${cur()})`) };
+      return [{ k: 'name', label: 'Machine name', type: 'text', req: 1, cls: 'span2' }, { k: 'type', label: 'Machine type', type: 'select', options: Object.keys(E.MACHINE_TYPES).map((k) => [k, E.MACHINE_TYPES[k]]), r: 1, cls: 'span2' }].concat(fl.map((k) => map[k])).concat(['offset','digital'].includes(d.type) ? [map.maxSheetW,map.maxSheetH] : []).concat([{ k: 'notes', label: 'Notes', type: 'text', cls: 'span2' }]);
     }
     if (key === 'finishing') {
       const m = d.method;
@@ -601,6 +630,11 @@
       if (f.req && isBlank(v)) errs[f.k] = 'Required.';
       else if (f.type === 'number' && !isBlank(v)) { if (!U.isNumeric(v)) errs[f.k] = 'Must be a number.'; else if (Number(v) < 0) errs[f.k] = 'Cannot be negative.'; }
     });
+    if (key === 'machines') {
+      if (isBlank(d.maxSheetW) !== isBlank(d.maxSheetH)) errs.maxSheetW = 'Enter both maximum sheet dimensions.';
+      ['maxSheetW','maxSheetH'].forEach(k => { if (!isBlank(d[k]) && !(num(d[k]) > 0)) errs[k] = 'Must be above zero.'; });
+      if (!isBlank(d.colorUnits) && !(Number.isInteger(Number(d.colorUnits)) && Number(d.colorUnits) >= 1)) errs.colorUnits = 'Enter a whole number of colour units above zero.';
+    }
     if (key === 'materials') {
       const p = (k) => num(d[k]);
       if (d.unit === 'sheet' || d.unit === 'pack') { if (!(p('sheetW') > 0)) errs.sheetW = 'Sheet width is needed.'; if (!(p('sheetH') > 0)) errs.sheetH = 'Sheet height is needed.'; }
@@ -767,6 +801,34 @@
     } finally { invoiceBusy = false; render(); }
   }
 
+  const EQUIPMENT = [{"table": "machines", "name": "Heidelberg GTO 52 · 2 colour · 697531", "machine_type": "offset", "color_units": 2, "max_sheet_width_mm": 360, "max_sheet_height_mm": 520, "notes": "Inventory: Heidelberg GTOZ-52 MASCH-NR-697531. Supplied sheet capacity 36 × 52 cm. Confirm speed, rates, printable margins and gripper.", "id": "00000000-ec07-4000-8000-000000000001", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "machines", "name": "Heidelberg GTO 52 · 2 colour · 692593", "machine_type": "offset", "color_units": 2, "max_sheet_width_mm": 360, "max_sheet_height_mm": 520, "notes": "Inventory: Heidelberg GTOZ-52 MASCH-NR-692593. Supplied sheet capacity 36 × 52 cm. Confirm speed, rates, printable margins and gripper.", "id": "00000000-ec07-4000-8000-000000000002", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "machines", "name": "Heidelberg GTO 52 · 2 colour · 686817", "machine_type": "offset", "color_units": 2, "max_sheet_width_mm": 360, "max_sheet_height_mm": 520, "notes": "Inventory: Heidelberg GTOZ-52 MASCH-NR-686817. Supplied sheet capacity 36 × 52 cm. Confirm speed, rates, printable margins and gripper.", "id": "00000000-ec07-4000-8000-000000000003", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "machines", "name": "Heidelberg GTO 52 · 2 colour · 687805", "machine_type": "offset", "color_units": 2, "max_sheet_width_mm": 360, "max_sheet_height_mm": 520, "notes": "Inventory: Heidelberg GTOZ-52 MASCH-NR-687805. Supplied sheet capacity 36 × 52 cm. Confirm speed, rates, printable margins and gripper.", "id": "00000000-ec07-4000-8000-000000000004", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "machines", "name": "Heidelberg GTO 52 · 1 colour · 711940", "machine_type": "offset", "color_units": 1, "max_sheet_width_mm": 360, "max_sheet_height_mm": 520, "notes": "Inventory: Heidelberg GTOZ-52 MASCH-NR-711940. Supplied sheet capacity 36 × 52 cm. Confirm speed, rates, printable margins and gripper.", "id": "00000000-ec07-4000-8000-000000000005", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "machines", "name": "Heidelberg GTO 52 · 1 colour · 709433", "machine_type": "offset", "color_units": 1, "max_sheet_width_mm": 360, "max_sheet_height_mm": 520, "notes": "Inventory: Heidelberg GTOZ-52 MASCH-NR-709433. Supplied sheet capacity 36 × 52 cm. Confirm speed, rates, printable margins and gripper.", "id": "00000000-ec07-4000-8000-000000000006", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "machines", "name": "Canon imagePRESS C810", "machine_type": "digital", "notes": "Inventory: User supplied equipment list. Confirm dimensions, production speed and operating rates.", "id": "00000000-ec07-4000-8000-000000000007", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "machines", "name": "Mutoh XpertJet 1682SR", "machine_type": "large_format", "notes": "Inventory: User supplied equipment list. Confirm dimensions, production speed and operating rates.", "id": "00000000-ec07-4000-8000-000000000008", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "machines", "name": "HP DesignJet T630", "machine_type": "large_format", "notes": "Inventory: User supplied equipment list. Confirm dimensions, production speed and operating rates.", "id": "00000000-ec07-4000-8000-000000000009", "is_demo": false, "hourly_rate": null, "speed": null}, {"table": "finishing_operations", "name": "Wohlenberg Hannover cutter", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 115-3357-024. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-00000000000a", "is_demo": false}, {"table": "finishing_operations", "name": "Polar cutter", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 76EM-5961172. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-00000000000b", "is_demo": false}, {"table": "finishing_operations", "name": "Raab Paper Whale", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 00057753. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately. Needs classification: confirm equipment function.", "id": "00000000-ec07-4000-8000-00000000000c", "is_demo": false}, {"table": "finishing_operations", "name": "Hosner Pion Machine", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 1888. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately. Needs classification: confirm equipment function.", "id": "00000000-ec07-4000-8000-00000000000d", "is_demo": false}, {"table": "finishing_operations", "name": "Binding machine", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: NA. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-00000000000e", "is_demo": false}, {"table": "finishing_operations", "name": "Powertech thermal laminator", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: NA. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-00000000000f", "is_demo": false}, {"table": "finishing_operations", "name": "Ralen champion perforator", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 761607-E0901/013. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000010", "is_demo": false}, {"table": "finishing_operations", "name": "Manual pressure machine", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: NA. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000011", "is_demo": false}, {"table": "finishing_operations", "name": "Juki heavy sewing machine", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: DDL-0700-4D00E19786. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000012", "is_demo": false}, {"table": "finishing_operations", "name": "Spiral binding machine 1", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: NA. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000013", "is_demo": false}, {"table": "finishing_operations", "name": "Spiral binding machine 2", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: NA. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000014", "is_demo": false}, {"table": "finishing_operations", "name": "Folding machine", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: GP98105-52230. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000015", "is_demo": false}, {"table": "finishing_operations", "name": "Grooving machine", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: NA. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000016", "is_demo": false}, {"table": "finishing_operations", "name": "Foiling machine", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: NA. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000017", "is_demo": false}, {"table": "finishing_operations", "name": "Die cutter PYQ1040C", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 99013; 1040 × 720 mm. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000018", "is_demo": false}, {"table": "finishing_operations", "name": "Die cutter TYMK1100", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 1100 × 800 mm. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-000000000019", "is_demo": false}, {"table": "finishing_operations", "name": "Die cutter DPDHF", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 711114; 2200 × 3200 mm. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-00000000001a", "is_demo": false}, {"table": "finishing_operations", "name": "Mutoh ValueCut VC21300", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: VC21300. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-00000000001b", "is_demo": false}, {"table": "finishing_operations", "name": "Sticker laminator 1700SLH", "pricing_method": "per_hour", "rate": null, "setup_cost": 0, "min_charge": 0, "notes": "Inventory: 1700SLH. Confirm pricing method and rate; hourly is a provisional choice. Charge film and other materials separately.", "id": "00000000-ec07-4000-8000-00000000001c", "is_demo": false}];
+  let equipmentBusy = false, equipmentStatus = '';
+  function equipmentCard() {
+    return `<section class="card"><h3>Your production equipment</h3><p class="hint">9 printing machines and 19 finishing equipment records, including two spiral binders. Heidelberg capacity: 36 × 52 cm; four 2-colour and two 1-colour presses. Rates and speeds are unconfirmed. Finishing pricing defaults to hourly until you choose the correct method.</p><details><summary>Review equipment list</summary><ul>${EQUIPMENT.map(x => `<li>${esc(x.name)}${/Needs classification/.test(x.notes) ? ' — needs clarification' : ''}</li>`).join('')}</ul></details><p class="hint">For an existing database, run equipment-migration.sql in your Supabase SQL editor before importing. Matching exact names or inventory IDs are skipped; your existing rates are preserved.</p>${canEdit() ? `<button class="btn primary" data-act="import-equipment"${equipmentBusy ? ' disabled' : ''}>${equipmentBusy ? 'Importing…' : 'Import your equipment'}</button>` : '<p class="hint">An admin can import this list.</p>'}${equipmentStatus ? `<p class="notice info">${esc(equipmentStatus)}</p>` : ''}</section>`;
+  }
+  async function importEquipment() {
+    if (!canEdit() || equipmentBusy) return;
+    equipmentBusy = true; equipmentStatus = ''; render();
+    let added = 0, skipped = 0;
+    try {
+      // Preflight the migration before inserting any equipment.
+      const check = await sb.from('machines').select('max_sheet_width_mm,max_sheet_height_mm');
+      if (check.error) throw check.error;
+      for (const item of EQUIPMENT) {
+        const key = item.table === 'machines' ? 'machines' : 'finishing';
+        if (DB[key].some(r => r.id === item.id || r.name.trim().toLowerCase() === item.name.toLowerCase())) { skipped++; continue; }
+        const values = Object.assign({},item); delete values.table;
+        const result = await sb.from(item.table).insert(values).select('*').single();
+        if (result.error) throw result.error;
+        if (!result.data) throw new Error('The database did not return the saved equipment.');
+        const record = fromRow(key,result.data);
+        DB[key].push(record); lastSynced[key].push(clone(record)); added++;
+      }
+      equipmentStatus = `${added} equipment records added; ${skipped} existing records kept. Enter machine rates/speeds and finishing methods/rates before calculating.`;
+    } catch(e) { equipmentStatus = `${added} records added; ${skipped} kept. ${friendlyDbError(e)} Run equipment-migration.sql if the database has not been updated, then retry; saved records will be skipped.`; }
+    finally { equipmentBusy = false; render(); }
+  }
+
   function viewSettings() {
     const dis = canEdit() ? '' : ' disabled';
     const wr = Object.keys(E.MODES).map((k) => `<tr><td>${E.MODES[k]}</td><td class="n"><input type="number" step="any" data-s="waste.${k}.pct" value="${esc(DB.settings.waste[k].pct)}"${dis}></td><td class="n"><input type="number" step="any" data-s="waste.${k}.setup" value="${esc(DB.settings.waste[k].setup)}"${dis}></td><td class="n"><input type="number" step="any" data-s="waste.${k}.min" value="${esc(DB.settings.waste[k].min)}"${dis}></td></tr>`).join('');
@@ -784,7 +846,7 @@
         <section class="card"><h3>Minimum charges <small>used when a material or operation has none of its own</small></h3><div class="grid">${sIn('minimums.material', `Minimum material charge per line (${cur()})`)}${sIn('minimums.finishing', `Minimum finishing charge per operation (${cur()})`)}</div></section>
         <section class="card"><h3>Machine rates</h3>${quickTable('machines', [['hourlyRate', 'Hourly rate'], ['setupRate', 'Setup rate'], ['speed', 'Speed']])}<p class="hint">Setup rate empty = same as hourly rate. Other machine fields are in Machines.</p></section>
         <section class="card"><h3>Labor rates</h3>${quickTable('labor', [['hourlyCost', 'Hourly cost']])}</section>
-        ${invoiceCard()}<section class="card" id="matcosts"><h3>Material costs</h3>${quickTable('materials', [['sheetW', 'Sheet W (mm)'], ['sheetH', 'Sheet H (mm)'], ['rollWidth', 'Roll W (mm)'], ['purchaseCost', 'Purchase cost'], ['minCharge', 'Min. charge']])}<p class="hint">Purchase cost is per the material's unit (per sheet unless you changed it in Materials → Edit — e.g. per pack, per meter, per m²). Sheets need width and height; rolls need roll width.</p></section>
+        ${equipmentCard()}${invoiceCard()}<section class="card" id="matcosts"><h3>Material costs</h3>${quickTable('materials', [['sheetW', 'Sheet W (mm)'], ['sheetH', 'Sheet H (mm)'], ['rollWidth', 'Roll W (mm)'], ['purchaseCost', 'Purchase cost'], ['minCharge', 'Min. charge']])}<p class="hint">Purchase cost is per the material's unit (per sheet unless you changed it in Materials → Edit — e.g. per pack, per meter, per m²). Sheets need width and height; rolls need roll width.</p></section>
         <section class="card"><h3>Finishing rates</h3>${quickTable('finishing', [['rate', 'Rate'], ['setupCost', 'Setup cost'], ['minCharge', 'Min. charge']])}</section>
         ${canEdit() ? teamCard() : ''}
         <section class="card"><h3>Data</h3><p class="hint" style="margin-top:0">Materials, machines, finishing and labor are shared by everyone signed in — an edit here is visible to your whole team immediately.</p>
@@ -886,6 +948,7 @@
     const t = e.target.closest('[data-act]'); if (!t) return;
     const a = t.dataset.act, d = t.dataset;
     switch (a) {
+      case 'import-equipment': syncChain = syncChain.then(importEquipment,importEquipment); await syncChain; break;
       case 'apply-ncr-invoice': syncChain = syncChain.then(applyNcrInvoice, applyNcrInvoice); await syncChain; break;
       case 'close': closeModal(); break;
       case 'sign-out': await sb.auth.signOut(); break;
@@ -994,6 +1057,13 @@
     }
     if (t.dataset.k) {
       const k = t.dataset.k, v = t.type === 'checkbox' ? t.checked : t.value;
+      if (k === 'ncrQuantityMode') {
+        if (e.type !== 'change') return;
+        if (v === 'books') {
+          if (isBlank(state.job.setsPerPad)) state.job.setsPerPad = 50;
+          state.job.ncrBooks = num(state.job.qty) / num(state.job.setsPerPad);
+        }
+      }
       if (k === 'unit') {
         if (e.type !== 'change') return;
         const factor = (SIZE_UNITS[state.job.unit] || 1) / (SIZE_UNITS[v] || 1);
