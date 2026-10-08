@@ -289,6 +289,27 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 .need-costs summary{cursor:pointer;font-size:12px;font-weight:600;padding:8px 0}
 .need-costs .tbl{font-size:12px}
 @media(max-width:640px){.need-layout{grid-template-columns:1fr}.need-layout svg{max-height:220px}.need-kv{gap:8px 10px}.need-counts b{font-size:18px}}
+
+/* Related sizing and NCR quantity inputs share a compact row. */
+.col-form{container-type:inline-size;min-width:0}
+.compact-fields{display:grid;align-items:start;gap:10px;grid-column:1/-1;min-width:0}
+.size-fields{grid-template-columns:minmax(0,1.8fr) minmax(65px,.8fr) minmax(65px,.8fr) minmax(52px,.5fr)}
+.circle-size-fields{grid-template-columns:minmax(0,2fr) minmax(80px,1fr) minmax(52px,.5fr)}
+.quantity-fields{grid-template-columns:minmax(0,1.65fr) minmax(80px,.85fr) minmax(95px,1fr)}
+.compact-fields .f{min-width:0;gap:4px}
+.compact-fields .f>span{font-size:12px;line-height:1.35;white-space:nowrap}
+.compact-fields input,.compact-fields select{min-width:0;padding:8px;min-height:36px}
+.compact-fields .err:empty{display:none}
+.compact-help{grid-column:1/-1;margin:-4px 0 0;color:var(--muted);font-size:11.5px;line-height:1.5}
+.ncr-flow .compact-fields.span2,.ncr-flow .compact-help.span2{grid-column:1/-1}
+@container(max-width:440px){
+  .size-fields{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(52px,.65fr)}
+  .size-fields .size-preset-field{grid-column:1/-1}
+  .circle-size-fields{grid-template-columns:minmax(0,1fr) minmax(52px,.65fr)}
+  .quantity-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .quantity-fields>.f:first-child{grid-column:1/-1}
+}
+@container(max-width:260px){.compact-fields{grid-template-columns:minmax(0,1fr)}.compact-fields>.f{grid-column:1/-1}.compact-fields .f>span{white-space:normal}}
 </style>
 </head>
 <body>
@@ -1224,6 +1245,48 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   /* ================= job helpers ================= */
   const PRODUCT_MODE = { Sticker: 'sticker', Label: 'sticker', Banner: 'large_format', 'Roll-up': 'large_format', Poster: 'large_format', 'Large Format': 'large_format' };
+  function materialPurpose(m) {
+    const explicit=String(m.notes || '').match(/^Material purpose: (cb|cfb|cf|ncr|lamination|mounting)$/m);
+    if(explicit) return explicit[1];
+    const category=String(m.category || '').toLowerCase(), name=String(m.name || '').toLowerCase();
+    if (category==='ncr cb') return 'cb';
+    if (category==='ncr cfb') return 'cfb';
+    if (category==='ncr cf') return 'cf';
+    if (/\bncr\b/.test(name) || category.startsWith('ncr')) {
+      if (/\bcfb\b/.test(name)) return 'cfb';
+      if (/\bcb\b/.test(name)) return 'cb';
+      if (/\bcf\b/.test(name)) return 'cf';
+      return 'ncr';
+    }
+    if (category==='lamination film' || category==='film' || /laminat(?:ion|ing|e|ed).*film|film.*laminat/.test(name)) return 'lamination';
+    if (category==='foam board' || /foam\s*(?:board|core)|mounting\s*board/.test(name)) return 'mounting';
+    return '';
+  }
+  function materialFits(m,j,role) {
+    const purpose=materialPurpose(m), sheet=E.materialMode(m)==='sheet';
+    if (role==='ncr') return sheet && ['cfb','cf','ncr'].includes(purpose);
+    if (role==='lamination' || role==='mounting') return purpose===role;
+    if (role==='cover') return sheet && !purpose && ['Paper','Card','Packaging'].includes(m.category);
+    if (role==='manual') return true;
+    if (j.product==='NCR') return sheet && ['cb','ncr'].includes(purpose);
+    if (j.product==='Custom') return !purpose || purpose==='mounting';
+    if (purpose) return false;
+    if (['Sticker','Label'].includes(j.product)) return ['Sticker','Vinyl'].includes(m.category);
+    if (['Banner','Roll-up','Large Format'].includes(j.product)) return ['Banner','Fabric','Vinyl','PVC'].includes(m.category);
+    return ['Paper','Card','Packaging'].includes(m.category);
+  }
+  function jobMaterialErrors(j) {
+    const errors=[];
+    const test=(id,role,field)=>{const m=find(DB.materials,id);if(m && !materialFits(m,j,role)) errors.push({field,msg:`"${m.name}" is not suitable for ${role==='main' ? j.product : role}. Choose a material from the filtered list, or set its Stock use in Materials → Edit.`});};
+    test(j.materialId,'main','materialId');
+    (j.addMaterials || []).forEach((r,i)=>test(r.materialId,r.role || 'manual',`addMaterials.${i}.materialId`));
+    return errors;
+  }
+  function calculateJob(j) {
+    const r=E.calculate(j,DB), errors=jobMaterialErrors(j);
+    if(errors.length){r.errors.push(...errors);r.ok=false;r.total=0;r.perPiece=0;}
+    return r;
+  }
   function defaultNcrMachine() {
     const presses = DB.machines.filter(m => m.type === 'offset' && Number(m.colorUnits) === 1 && !m.demo);
     return presses.find(m => /(?:^|\D)711940(?:\D|$)/.test(m.name + ' ' + (m.notes || '')))
@@ -1264,9 +1327,9 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     }
     const need = j.mode === 'offset' || j.mode === 'digital' ? 'sheet' : null;
     const c = find(DB.materials, j.materialId);
-    if (!c || (need && E.materialMode(c) !== 'sheet')) {
-      const okMode = (m) => (need ? E.materialMode(m) === 'sheet' : E.materialMode(m) === 'roll');
-      const p = j.product === 'NCR' ? defaultNcrStock('cbwhite') : DB.materials.find((m) => matReady(m) && okMode(m)) || DB.materials.find(okMode) || DB.materials[0];
+    if (!c || !materialFits(c,j,'main') || (need && E.materialMode(c) !== 'sheet')) {
+      const okMode = (m) => materialFits(m,j,'main') && (need ? E.materialMode(m) === 'sheet' : E.materialMode(m) === 'roll');
+      const p = j.product === 'NCR' ? defaultNcrStock('cbwhite') : DB.materials.find((m) => matReady(m) && okMode(m)) || DB.materials.find(okMode);
       j.materialId = p ? p.id : '';
     }
     return j;
@@ -1380,9 +1443,11 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   function ncrQuantityHTML(j) {
     const books = j.ncrQuantityMode === 'books';
-    return F.sel('ncrQuantityMode', 'Enter quantity as', [['sets', 'Complete sets / serial numbers'], ['books', 'Books / pads']], {r: 1})
-      + (books ? F.num('ncrBooks', 'Number of books / pads', {ph: '20'}) : F.num('qty', 'Quantity (complete sets)', {ph: '1000'}))
-      + F.num('setsPerPad', 'Serial numbers / sets per book', {ph: '50', hint: books ? 'Required. Each serial number is one original plus its copies.' : 'Optional for loose sets. Enter this to show the number of books.'})
+    return '<div class="compact-fields quantity-fields span2">'
+      + F.sel('ncrQuantityMode', 'Enter quantity as', [['sets', 'Complete sets / serial numbers'], ['books', 'Books / pads']], {r: 1})
+      + (books ? F.num('ncrBooks', 'Books / pads', {ph: '20'}) : F.num('qty', 'Complete sets', {ph: '1000'}))
+      + F.num('setsPerPad', 'Sets per book', {ph: '50'}) + '</div>'
+      + `<p class="compact-help span2">${books ? 'Sets per book is required. Each serial number includes the original and all copies.' : 'Sets per book is optional for loose sets; enter it to show the book count.'}</p>`
       + '<div class="notice info span2" id="ncr-count-summary"></div>';
   }
   function ncrCountHTML(j) {
@@ -1397,10 +1462,15 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       + '<br>All parts within a set share the same serial number. Finished sheets are cut forms, not purchased parent sheets.';
   }
 
-  function sizePickerHTML(j) {
+  function sizePickerHTML(j, compact) {
     const options = [['custom', 'Custom — enter your own size']].concat(sizeOptions(j).map(p =>
       [p[0], p[1] + ' · ' + (p[3] ? `${p[2] / 10} × ${p[3] / 10}` : `Ø ${p[2] / 10}`) + ' cm']));
-    return `<label class="f span2"><span>Common finished sizes</span><select id="sizepreset">${options.map(p => opt(p[0], p[1], selectedSize(j))).join('')}</select><small>Presets fill the dimensions in cm. Choose Custom or edit the dimensions for your own size.</small></label>`;
+    return `<label class="f${compact ? ' size-preset-field' : ' span2'}"><span>${compact ? 'Size preset' : 'Common finished sizes'}</span><select id="sizepreset">${options.map(p => opt(p[0], p[1], selectedSize(j))).join('')}</select>${compact ? '' : '<small>Presets fill the dimensions in cm. Choose Custom or edit the dimensions for your own size.</small>'}</label>`;
+  }
+
+  function sizeFieldsHTML(j) {
+    const circle=j.mode==='sticker' && j.shape==='circle';
+    return `<div class="compact-fields size-fields${circle ? ' circle-size-fields' : ''} span2">${sizePickerHTML(j,true)}${circle ? F.num('diameter',`Diameter (${j.unit})`) : F.num('w',`Width (${j.unit})`) + F.num('h',`Height (${j.unit})`)}${F.sel('unit','Unit',[['cm','cm'],['mm','mm'],['m','m']],{r:1})}</div><p class="compact-help span2">Choose a preset or enter your own dimensions. Presets use cm.</p>`;
   }
 
   /* ================= views: New calculation ================= */
@@ -1423,9 +1493,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       ${F.sel('mode', 'Printing method', Object.keys(E.MODES).map((k) => [k, E.MODES[k]]), { r: 1 })}
       ${j.product === 'NCR' ? ncrQuantityHTML(j) : F.num('qty', 'Quantity (pieces)', {ph: '1000'})}
       ${j.mode === 'sticker' ? F.sel('shape', 'Sticker shape', [['rect', 'Rectangle'], ['circle', 'Circle'], ['custom', 'Custom shape']], { r: 1 }) : ''}
-      ${sizePickerHTML(j)}
-      ${F.sel('unit', 'Size unit', [['mm', 'mm'], ['cm', 'cm'], ['m', 'meter']], { r: 1 })}
-      ${circle ? F.num('diameter', `Diameter (${U_})`) : F.num('w', `Finished width (${U_})`) + F.num('h', `Finished height (${U_})`)}
+      ${sizeFieldsHTML(j)}
       ${j.mode === 'sticker' && j.shape === 'custom' ? F.num('cutLen', 'Cut path per piece (mm)', { hint: 'Empty = bounding box perimeter' }) : ''}
       ${circle ? '' : F.num('ow', `Open width (${U_})`, { hint: isBook() ? 'Empty = 2 × width (spread)' : 'Only if folded / opened up' }) + F.num('oh', `Open height (${U_})`)}
       ${isBook() ? F.num('pages', 'Number of pages', { ph: '16', hint: 'Multiple of 4' }) : ''}
@@ -1435,10 +1503,10 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     </div></section>`;
 
     const ncr = j.product === 'NCR';
-    if (ncr) jobCard = `<section class="card" id="job-details"><h3><span class="step-title"><i>1</i> Job &amp; NCR format</span></h3><div class="grid g2">${F.txt('name','Job name',{cls:'span2',ph:'e.g. A5 receipt books for client'})}${F.sel('product','Product type',E.PRODUCT_TYPES.map(p=>[p,p]),{r:1})}${F.sel('mode','Printing method',['offset','digital'].map(k=>[k,E.MODES[k]]),{r:1})}${ncrFormatHTML(j)}${sizePickerHTML(j)}${F.sel('unit','Size unit',[['mm','mm'],['cm','cm'],['m','meter']],{r:1})}${F.num('w',`Finished width (${U_})`)}${F.num('h',`Finished height (${U_})`)}</div><details class="adv" data-panel="ncr-job-advanced"><summary>More job options <span>Bleed, open size &amp; notes</span></summary><div class="grid g2">${F.num('bleed','Bleed (mm)',{ph:'3'})}${F.num('ow',`Open width (${U_})`,{hint:'Only for a folded form'})}${F.num('oh',`Open height (${U_})`)}<label class="f span2"><span>Notes</span><textarea data-k="notes">${esc(j.notes)}</textarea></label></div></details></section>`;
+    if (ncr) jobCard = `<section class="card" id="job-details"><h3><span class="step-title"><i>1</i> Job &amp; NCR format</span></h3><div class="grid g2">${F.txt('name','Job name',{cls:'span2',ph:'e.g. A5 receipt books for client'})}${F.sel('product','Product type',E.PRODUCT_TYPES.map(p=>[p,p]),{r:1})}${F.sel('mode','Printing method',['offset','digital'].map(k=>[k,E.MODES[k]]),{r:1})}${ncrFormatHTML(j)}${sizeFieldsHTML(j)}</div><details class="adv" data-panel="ncr-job-advanced"><summary>More job options <span>Bleed, open size &amp; notes</span></summary><div class="grid g2">${F.num('bleed','Bleed (mm)',{ph:'3'})}${F.num('ow',`Open width (${U_})`,{hint:'Only for a folded form'})}${F.num('oh',`Open height (${U_})`)}<label class="f span2"><span>Notes</span><textarea data-k="notes">${esc(j.notes)}</textarea></label></div></details></section>`;
     const quantityCard = ncr ? `<section class="card" id="ncr-quantity"><h3><span class="step-title"><i>4</i> Quantity</span><small>Books or complete sets</small></h3><div class="grid g2">${ncrQuantityHTML(j)}</div></section>` : '';
 
-    const matOpts = [['', '— choose material —']].concat(DB.materials.filter(m => !ncr || E.materialMode(m) === 'sheet' || m.id === j.materialId).map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
+    const matOpts = [['', '— choose material —']].concat(DB.materials.filter(m => materialFits(m,j,'main')).map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
     const machOpts = [['', '— choose machine —']].concat(DB.machines.filter((m) => E.MODE_MACHINES[j.mode].includes(m.type)).map((m) => [m.id, m.name]));
     let layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · part 1' : 'Main printing material'}</h4><div class="grid g2">
       ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1, cls:ncr ? 'span2' : '' })}${materialPriceHTML(mat)}
@@ -1506,17 +1574,17 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       <div style="margin-top:10px"><button class="btn sm" data-act="add" data-list="labor">Add labor operation</button></div>
       <p class="hint">Machine setup time is already costed at the machine's setup rate. Add labor only for people-time that is not already inside a machine rate.</p></section>`;
 
-    const addMatOpts = [['', '— choose —']].concat(DB.materials.map(m => [m.id,m.name]));
     const roles = [['manual', 'Other / manual quantity'], ['ncr', 'NCR copy layer'], ['lamination', 'Lamination film'], ['mounting', 'Mounting board'], ['cover', 'Cover / backing per pad']];
     const addRows = j.addMaterials.map((r, i) => {
 
       const mm = find(DB.materials, r.materialId), b = mm ? E.matBasis(mm) : null, k = `addMaterials.${i}`, role = r.role || 'manual';
       const op = find(DB.finishing, r.finId), auto = role !== 'manual';
-      const copyOpts = [['','— choose NCR stock —']].concat(DB.materials.filter(m => E.materialMode(m) === 'sheet' || m.id === r.materialId).map(m => [m.id,matLabel(m)]));
+      const roleOpts = [['','— choose suitable material —']].concat(DB.materials.filter(m=>materialFits(m,j,role)).map(m=>[m.id,matLabel(m)]));
+      const copyOpts = [['','— choose NCR stock —']].concat(DB.materials.filter(m => materialFits(m,j,'ncr')).map(m => [m.id,matLabel(m)]));
       const title = role === 'ncr' ? `Copy ${j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length} · part ${1 + j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length}` : (roles.find(x => x[0] === role) || roles[0])[1];
       return `<div class="material-layer" data-material-index="${i}"><h4>${esc(title)}<button class="btn sm" data-act="del" data-list="addMaterials" data-i="${i}" aria-label="Remove ${esc(title)}">Remove</button></h4><div class="grid g2">
         ${role === 'ncr' && ncr ? '' : F.sel(k + '.role', 'Purpose', roles, {r:1})}
-        ${F.sel(k + '.materialId',role === 'ncr' ? 'Copy NCR stock' : 'Stock',role === 'ncr' ? copyOpts : addMatOpts,{r:1,cls:role === 'ncr' ? 'span2' : ''})}${materialPriceHTML(mm)}
+        ${F.sel(k + '.materialId',role === 'ncr' ? 'Copy NCR stock' : 'Stock',role === 'ncr' ? copyOpts : roleOpts,{r:1,cls:role === 'ncr' ? 'span2' : ''})}${materialPriceHTML(mm)}
         ${!auto ? F.num(k + '.qty', `Quantity${b ? ' (' + b.label + ')' : ''}`, {ph: '1'}) : ''}
         ${role === 'lamination' ? F.sel(k + '.feed', 'Lamination method', [['web', 'Continuous printed roll (same length)'], ['pieces', 'Separate cut pieces (own layout)']], {r: 1, hint: 'Continuous requires film as wide as the printing roll. Separate pieces assumes you cut and rearrange them first.'}) : ''}
         ${role === 'ncr' ? ncrCopySettingsHTML(k,r,costing,i) : ''}
@@ -1655,7 +1723,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (!qs.length || qs.some((q) => !Number.isFinite(q) || q <= 0 || !Number.isInteger(q))) { box.innerHTML = '<p class="hint" style="margin:0"><i class="err" style="display:block">Enter whole quantities above 0, separated by commas.</i></p>'; return; }
     if (qs.length > 12) { box.innerHTML = '<p class="hint" style="margin:0">Compare up to 12 quantities.</p>'; return; }
     if (!state.result || !state.result.ok) { box.innerHTML = '<p class="hint" style="margin:0">Complete the job above to compare quantities.</p>'; return; }
-    const rows = E.compare(state.job, DB, qs), max = Math.max.apply(null, rows.map((x) => (x.ok ? x.perPiece : 0))) || 1;
+    const rows = E.compare(state.job, DB, qs).map(r=>{const errors=jobMaterialErrors(state.job);if(errors.length){r.ok=false;r.errors.push(...errors);}return r;}), max = Math.max.apply(null, rows.map((x) => (x.ok ? x.perPiece : 0))) || 1;
     box.innerHTML = `<table class="tbl tight"><thead><tr><th class="n">Quantity</th><th class="n">Total cost</th><th class="n">Cost / piece</th><th></th></tr></thead><tbody>${rows.map((x) => x.ok ? `<tr><td class="n">${U.f(x.qty)}</td><td class="n">${money(x.total)}</td><td class="n">${perPieceFmt(x.perPiece)}</td><td style="width:70px"><span class="bar" style="width:${Math.max(3, (x.perPiece / max) * 60).toFixed(0)}px"></span></td></tr>` : `<tr><td class="n">${U.f(x.qty)}</td><td colspan="3" class="err">${esc(x.errors[0] ? x.errors[0].msg : 'Cannot calculate')}</td></tr>`).join('')}</tbody></table><p class="hint">Rows ticked “Scales” grow with the quantity; other manual hours, quantities and costs stay fixed.</p>`;
   }
   function recalc() {
@@ -1664,7 +1732,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       j.qty = isBlank(j.ncrBooks) || isBlank(j.setsPerPad) ? '' : Number(j.ncrBooks) * Number(j.setsPerPad);
     }
     const count = $('#ncr-count-summary'); if (count) count.innerHTML = ncrCountHTML(j);
-    const r = E.calculate(state.job, DB);
+    const r = calculateJob(state.job);
     if (j.product === 'NCR' && j.ncrFormat === 'custom' && j.ncrRequestedCopies != null && !(Number.isInteger(Number(j.ncrRequestedCopies)) && Number(j.ncrRequestedCopies) >= 1 && Number(j.ncrRequestedCopies) <= 99)) { r.ok = false; r.errors.push({field:'ncrRequestedCopies',msg:'Enter a whole number of copies from 1 to 99.'}); r.total = 0; r.perPiece = 0; }
     state.result = r;
     const box = $('#results'); if (!box) return;
@@ -1797,6 +1865,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       return [
         { k: 'name', label: 'Material name', type: 'text', req: 1, cls: 'span2' },
         { k: 'category', label: 'Category', type: 'select', options: E.MAT_CATS.map((c) => [c, c]) },
+        { k: 'stockUse', label: 'Stock use', type: 'select', options: [['','Automatic from name / category'],['cb','NCR original · CB'],['cfb','NCR middle copy · CFB'],['cf','NCR last copy · CF'],['ncr','NCR paper · part type unspecified'],['lamination','Lamination film'],['mounting','Mounting / foam board']] },
         { k: 'gsm', label: 'GSM / thickness', type: 'text' },
         n('sheetW', 'Sheet width (mm)'), n('sheetH', 'Sheet height (mm)'), n('rollWidth', 'Roll width (mm)'), n('rollLength', 'Roll length (m)', { hint: 'Needed for “per roll” pricing' }),
         { k: 'unit', label: 'Purchase cost is', type: 'select', options: Object.keys(E.MAT_UNITS).map((k) => [k, E.MAT_UNITS[k]]), r: 1 },
@@ -1868,6 +1937,10 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (!canEdit()) { toast('Only an admin can edit rates.', 'warn'); return; }
     const rec = id ? clone(find(DB[key], id)) : blankRecord(key);
     if (!rec) return;
+    if (key==='materials') {
+      rec.stockUse=(String(rec.notes || '').match(/^Material purpose: (cb|cfb|cf|ncr|lamination|mounting)$/m) || [,''])[1];
+      rec.notes=String(rec.notes || '').replace(/^Material purpose: (cb|cfb|cf|ncr|lamination|mounting)\r?\n?/gm,'').trim();
+    }
     modalCtx = { kind: 'form', key, draft: rec, isNew: !id };
     openModal(`<h2>${id ? 'Edit' : 'Add'} ${ENT[key].one}</h2><div class="grid g2" id="formbody">${formBody(key, rec)}</div><div class="foot"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="save-ent">Save ${ENT[key].one}</button></div>`);
   }
@@ -1876,6 +1949,11 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const errs = validateDraft(key, draft);
     if (Object.keys(errs).length) { $('#formbody').innerHTML = formBody(key, draft, errs); toast('Please fix the highlighted fields.', 'warn'); return; }
     const out = clone(draft);
+    if (key==='materials') {
+      out.notes=String(out.notes || '').replace(/^Material purpose: (cb|cfb|cf|ncr|lamination|mounting)\r?\n?/gm,'').trim();
+      if (out.stockUse) out.notes+=(out.notes ? '\n' : '')+'Material purpose: '+out.stockUse;
+      delete out.stockUse;
+    }
     fieldDefs(key, out).forEach((f) => { if (f.type === 'number') out[f.k] = isBlank(out[f.k]) ? '' : Number(out[f.k]); });
     delete out.demo;
     const i = DB[key].findIndex((x) => x.id === out.id);
@@ -2193,7 +2271,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       case 'dup-calc': {
         const c = find(DB.calcs, d.id); if (!c) break;
         const j = clone(c.job); j.name = (j.name || c.name) + ' (copy)';
-        const r = E.calculate(j, DB); if (!r.ok) { toast('Could not duplicate: the original job no longer calculates cleanly with current rates.', 'warn'); break; }
+        const r = calculateJob(j); if (!r.ok) { toast('Could not duplicate: the original job no longer calculates cleanly with current rates.', 'warn'); break; }
         const prevJob = state.job, prevEditing = state.editingId, prevUuid = state.editingUuid;
         state.job = j; state.editingId = null; state.editingUuid = null; state.result = r;
         await saveCalc(true);
@@ -2300,6 +2378,15 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       }
       if (e.type === 'change' && t.dataset.r) {
         if (k === 'product') {
+          if (previousProduct!==v) state.job.machineId='';
+          if (previousProduct==='NCR' && v!=='NCR') {
+            const defaults=E.newJob();
+            state.job.addMaterials=state.job.addMaterials.filter(r=>!['ncr','cover'].includes(r.role));
+            ['ncrCutMode','ncrFormat','ncrRequestedCopies','ncrCopyArchive','ncrDefaultMaterialId','ncrQuantityMode','ncrBooks'].forEach(k=>delete state.job[k]);
+            ['setsPerPad','pressW','pressH','plates','plateCost','inkRate','setupHours','speed','wastePct','setupWaste','extraWaste','parentDivisor','colors','colorMode','bleed','sides','margin','gripper','gutter'].forEach(k=>state.job[k]=defaults[k]);
+            state.job.machineId=''; state.job.materialId=''; state.job.mode='digital';
+            state.job.sides=['Brochure','Flyer','Menu'].includes(v) ? 2 : 1;
+          }
           const pm = PRODUCT_MODE[v]; if (pm) state.job.mode = pm; else if (state.job.mode !== 'offset' && state.job.mode !== 'digital') state.job.mode = 'digital';
           if (E.BOOK.includes(v)) state.job.sides = 2;
           if (v === 'NCR') {
@@ -2312,7 +2399,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
           }
           autoPick(state.job);
         }
-        if (/^addMaterials\.\d+\.role$/.test(k)) { const row = state.job.addMaterials[Number(k.split('.')[1])]; row.qty = v === 'manual' ? 1 : ''; row.printed = true; row.wastePct = ''; row.setupWaste = ''; }
+        if (/^addMaterials\.\d+\.role$/.test(k)) { const row = state.job.addMaterials[Number(k.split('.')[1])]; if (!materialFits(find(DB.materials,row.materialId) || {},state.job,v)) row.materialId=''; row.qty = v === 'manual' ? 1 : ''; row.printed = true; row.wastePct = ''; row.setupWaste = ''; }
         if (k === 'mode') { autoPick(state.job); if (v !== 'sticker') { state.job.shape = 'rect'; state.job.cutFinId = ''; state.job.lamFinId = ''; } }
         render();
       } else if (e.type === 'input' || e.type === 'change') recalc();
