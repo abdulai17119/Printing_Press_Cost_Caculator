@@ -396,7 +396,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       materialId: '', machineId: '',
       pressW: '', pressH: '', parentDivisor: 1,
       margin: 5, gripper: 0, gutter: 0, rollEdge: 0,
-      colors: 4, colorMode: 'color', plates: '', plateCost: '', inkRate: '',
+      colors: 4, colorMode: 'color', clickClass:'', plates: '', plateCost: '', inkRate: '',
       setupHours: '', speed: '', clickColor: '', clickBW: '', inkSqm: '', machineSqm: '',
       wastePct: '', setupWaste: '', extraWaste: 0,
       shape: 'rect', diameter: '', cutLen: '', cutFinId: '', lamFinId: '',
@@ -511,10 +511,26 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     return (isBook || !mat || materialMode(mat) !== 'roll' || hasPress) ? 'sheet' : 'roll';
   }
 
+  const CLICK_CLASSES = {a4:'A4',a3:'A3',long:'Long-sheet counter'};
+  const CANON_C810_CLICKS = {currency:'AED',rates:{a4:{color:0.18,bw:0.05},a3:{color:0.20,bw:0.10},long:{color:0.40,bw:0.20}}};
+  function clickProfile(mach) {
+    if (!mach || mach.type!=='digital') return null;
+    const match=String(mach.notes || '').match(/^Digital click rates: (.+)$/m);
+    if(match) {try{return JSON.parse(match[1]);}catch(e){return {currency:'',rates:{}};}}
+    return /(?:canon|imagepress).*\bc810\b/i.test(mach.name || '') ? clone(CANON_C810_CLICKS) : null;
+  }
+  function clickRate(job,mach) {
+    const p=clickProfile(mach), mode=job.colorMode==='bw' ? 'bw':'color', key=mode==='bw' ? 'clickBW':'clickColor';
+    return !isBlank(job[key]) ? num(job[key]) : p ? num(p.rates && p.rates[job.clickClass] && p.rates[job.clickClass][mode]) : num(mach[key]);
+  }
   function pressSheet(job, mat, mach) {
-    if (job.ncrCutMode === 'exact') {
+    if (materialMode(mat) === 'sheet' && (job.sheetCutMode === 'exact' || (!job.sheetCutMode && job.ncrCutMode === 'exact'))) {
       const u = UNIT_MM[job.unit] || 1;
-      const w = num(job.w) * u, h = num(job.h) * u;
+      const circle = job.mode === 'sticker' && job.shape === 'circle';
+      const finishedW = num(circle ? job.diameter : job.w) * u, finishedH = num(circle ? job.diameter : job.h) * u;
+      const opened = job.sheetCutMode === 'exact' && num(job.ow)>0 && num(job.oh)>0;
+      const book = job.sheetCutMode === 'exact' && BOOK.includes(job.product);
+      const w = opened ? num(job.ow)*u : book ? 2*finishedW : finishedW, h = opened ? num(job.oh)*u : finishedH;
       const parent = imposeSheet({pieceW:w,pieceH:h,sheetW:num(mat.sheetW),sheetH:num(mat.sheetH),margin:0,gripper:0,bleed:0,gutter:0});
       return {w,h,divisor:parent.ups,auto:false,exact:true,parentW:num(mat.sheetW),parentH:num(mat.sheetH),parentLayout:parent};
     }
@@ -626,7 +642,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         if (!(num(isBlank(job.speed) ? mach.speed : job.speed) > 0)) err('machineId', `Enter the production speed for "${mach.name}" or override it in this job.`);
         if (mach.type === 'digital') {
           const key = job.colorMode === 'bw' ? 'clickBW' : 'clickColor';
-          if (isBlank(job[key]) && isBlank(mach[key])) err('machineId', `Enter the selected digital click cost for "${mach.name}".`);
+          if (!clickProfile(mach) && isBlank(job[key]) && isBlank(mach[key])) err('machineId', `Enter the selected digital click cost for "${mach.name}".`);
         }
       }
       ['maxSheetW','maxSheetH'].forEach(k => { if (!isBlank(mach[k]) && !(num(mach[k]) > 0)) err('machineId','Machine sheet capacity must be positive.'); });
@@ -638,6 +654,13 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         if (!isBlank(mach[k]) && (!isNumeric(mach[k]) || Number(mach[k]) < 0)) err('machineId', `Machine "${mach.name}" has an invalid ${k}. Fix it in Machines.`);
       });
     }
+    if (mach && mach.type==='digital' && clickProfile(mach)) {
+      const profile=clickProfile(mach), mode=job.colorMode==='bw' ? 'bw':'color', key=mode==='bw' ? 'clickBW':'clickColor';
+      if (!CLICK_CLASSES[job.clickClass]) err('clickClass','Choose the digital billing counter: A4, A3 or long sheet.');
+      if (profile.currency!==String((db.settings || defaultSettings()).currency)) err('machineId',`Digital click rates are in ${profile.currency || 'an unspecified currency'}. Match the calculator currency or edit the click rates in Machines.`);
+      const rate=profile.rates && profile.rates[job.clickClass] && profile.rates[job.clickClass][mode];
+      if (CLICK_CLASSES[job.clickClass] && isBlank(job[key]) && (isBlank(rate) || !isNumeric(rate) || Number(rate)<0)) err('machineId','Enter a confirmed non-negative rate for the selected click counter in Machines.');
+    }
     if (mat) {
       if (job.product === 'NCR' && materialMode(mat) !== 'sheet') err('materialId', 'The original NCR part needs sheet stock.');
       if (isBlank(mat.purchaseCost)) err('materialId', `Material "${mat.name}" has no price yet. Enter its purchase cost in Materials (or Settings → Material costs) before using it.`);
@@ -647,7 +670,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       const cut = pressSheet(job,mat,mach);
       const sw0 = cut.w, sh0 = cut.h;
       if (cut.exact && !(cut.divisor > 0)) err('materialId','The finished size cannot be cut from this parent sheet.');
-      if (cut.exact && (num(job.ow) > 0 || num(job.oh) > 0)) err('ow','Exact-size cutting uses finished dimensions. Clear the open size or choose the larger press-sheet workflow.');
+      if (cut.exact && !job.sheetCutMode && (num(job.ow) > 0 || num(job.oh) > 0)) err('ow','Exact-size cutting uses finished dimensions. Clear the open size or choose the larger press-sheet workflow.');
       if (mach && kind0 === 'sheet' && !fitsPress(sw0,sh0,mach)) err('pressW', 'The press sheet exceeds the selected machine capacity. Reduce the press sheet dimensions.');
       if (materialMode(mat) === 'unknown' && !hasPress) err('materialId', `Material "${mat.name}" has no sheet size or roll width yet. Enter it in Materials (or Settings → Material costs).`);
       else if (kind0 === 'sheet' && !(sw0 > 0 && sh0 > 0)) err('materialId', `Material "${mat.name}" has no sheet size yet. Enter its width and height in Materials (or Settings → Material costs).`);
@@ -824,13 +847,13 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       Object.assign(res.summary.printing, { impressions, plates, colours: colors, passes, plateCost, inkRate });
     } else if (costing === 'digital') {
       const bw = job.colorMode === 'bw';
-      const click = bw ? (isBlank(job.clickBW) ? num(mach.clickBW) : num(job.clickBW)) : (isBlank(job.clickColor) ? num(mach.clickColor) : num(job.clickColor));
+      const click = clickRate(job,mach), billingClass=clickProfile(mach) ? CLICK_CLASSES[job.clickClass] : ''; 
       impressions = totalU * sides;
-      addVar('printing', `Clicks (${bw ? 'B&W' : 'colour'})`, `${f(totalU)} sheets × ${sides} sides = ${f(impressions)} clicks × ${f(click, 4)}`, impressions * click, true);
+      addVar('printing', `Clicks (${bw ? 'B&W' : 'colour'}${billingClass ? ' · '+billingClass : ''})`, `${f(totalU)} sheets × ${sides} sides = ${f(impressions)} clicks × ${f(click, 4)}`, impressions * click, true);
       if (speed > 0) runHours = impressions / speed; else noSpeed();
       addVar('machine', `${mach.name} — running time`, `${f(impressions)} impressions ÷ ${f(speed)} per hour = ${f(runHours, 3)} h × ${m(hourly)}`, runHours * hourly, true);
       if (cpi > 0) addVar('machine', 'Cost per impression', `${f(impressions)} × ${f(cpi, 4)}`, impressions * cpi);
-      Object.assign(res.summary.printing, { impressions, clicks: impressions, clickRate: click, colorMode: bw ? 'B&W' : 'Colour' });
+      Object.assign(res.summary.printing, { impressions, clicks: impressions, clickRate: click, billingClass, colorMode: bw ? 'B&W' : 'Colour' });
     } else {
       const cellArea = ((W + 2 * bleed) * (H + 2 * bleed)) / 1e6;
       const printedGood = qty * cellArea * sides;
@@ -871,7 +894,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
           layer.setupHours = isBlank(row.setupHours) ? job.setupHours : row.setupHours;
           if (materialMode(mm) !== 'sheet') { res.errors.push({ field: `addMaterials.${i}.materialId`, msg: 'NCR copies need sheet materials.' }); return; }
         } else {
-          layer.ncrCutMode = ''; layer.w = W / u; layer.h = H / u; layer.shape = 'rect'; layer.ow = ''; layer.oh = ''; layer.pages = ''; layer.pressW = ''; layer.pressH = ''; layer.parentDivisor = 1;
+          layer.ncrCutMode = ''; layer.sheetCutMode = ''; layer.w = W / u; layer.h = H / u; layer.shape = 'rect'; layer.ow = ''; layer.oh = ''; layer.pages = ''; layer.pressW = ''; layer.pressH = ''; layer.parentDivisor = 1;
           layer.margin = 0; layer.gripper = 0; layer.rollEdge = 0; layer.sides = 1;
           if (role !== 'lamination') layer.bleed = 0;
           if (role === 'cover') layer.qty = Math.ceil(qty / num(job.setsPerPad));
@@ -1002,7 +1025,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   return {
     version: '1.1', UNIT_MM, PRODUCT_TYPES, MODES, MODE_MACHINES, FIN_METHODS, MAT_UNITS, MAT_CATS, MACHINE_TYPES, MACHINE_FIELDS, SPEED_UNIT, CATEGORIES, BOOK,
-    defaultSettings, newJob, validate, calculate, compare, pressSheet, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
+    defaultSettings, newJob, validate, calculate, compare, CLICK_CLASSES, clickProfile, clickRate, pressSheet, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
     util: { num, r2, f, m, isBlank, isNumeric, clone, find }
   };
 });
@@ -1334,7 +1357,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     }
     return j;
   }
-  function freshJob() { return autoPick(E.newJob({ mode: 'digital', name: '', unit:'cm', w:9, h:5.5 })); }
+  function freshJob() { return autoPick(E.newJob({ mode: 'digital', name: '', unit:'cm', w:9, h:5.5, sheetCutMode:'exact', bleed:0 })); }
   // Seed.testJobs() references the LOCAL demo ids from seed.js (fin_matte_lam, lab_press, ...).
   // Your Supabase rows have their own generated ids, so any sub-row that doesn't match a real
   // row in this database is cleared rather than left pointing at something that doesn't exist.
@@ -1468,6 +1491,13 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     return `<label class="f${compact ? ' size-preset-field' : ' span2'}"><span>${compact ? 'Size preset' : 'Common finished sizes'}</span><select id="sizepreset">${options.map(p => opt(p[0], p[1], selectedSize(j))).join('')}</select>${compact ? '' : '<small>Presets fill the dimensions in cm. Choose Custom or edit the dimensions for your own size.</small>'}</label>`;
   }
 
+  function clickBillingHTML(j,mach) {
+    const p=E.clickProfile(mach); if(!p) return '';
+    const rate=p.rates && p.rates[j.clickClass];
+    const selected=rate ? `Colour ${U.f(rate.color,3)} · B&W ${U.f(rate.bw,3)} ${esc(p.currency)} per printed side` : 'Choose the counter billed by your supplier.';
+    return F.sel('clickClass','Digital billing counter',[['','— choose billing counter —'],...Object.entries(E.CLICK_CLASSES)],{r:1,cls:'span2'})+`<div class="notice info span2">${selected}<br><small>Use the sheet fed into the press, not the finished piece size. Confirm the counter used for SRA3 and long sheets. Rates exclude VAT.</small></div>`;
+  }
+
   function sizeFieldsHTML(j) {
     const circle=j.mode==='sticker' && j.shape==='circle';
     return `<div class="compact-fields size-fields${circle ? ' circle-size-fields' : ''} span2">${sizePickerHTML(j,true)}${circle ? F.num('diameter',`Diameter (${j.unit})`) : F.num('w',`Width (${j.unit})`) + F.num('h',`Height (${j.unit})`)}${F.sel('unit','Unit',[['cm','cm'],['mm','mm'],['m','m']],{r:1})}</div><p class="compact-help span2">Choose a preset or enter your own dimensions. Presets use cm.</p>`;
@@ -1478,9 +1508,11 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   function viewCalc() {
     const j = state.job;
+    if (!j.sheetCutMode) { j.sheetCutMode = j.ncrCutMode || 'exact'; if(j.sheetCutMode==='exact') j.bleed=0; }
     const mat = find(DB.materials, j.materialId), mach = find(DB.machines, j.machineId);
     const pressOv = num(j.pressW) > 0 && num(j.pressH) > 0;
     const kind = mat && E.materialMode(mat) === 'roll' && !pressOv && !isBook() ? 'roll' : 'sheet';
+    const exactCut = kind === 'sheet' && j.sheetCutMode === 'exact';
     const costing = mach ? (mach.type === 'offset' ? 'offset' : mach.type === 'digital' ? 'digital' : 'area') : 'digital';
     const circle = j.mode === 'sticker' && j.shape === 'circle';
     const U_ = j.unit;
@@ -1498,25 +1530,28 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       ${circle ? '' : F.num('ow', `Open width (${U_})`, { hint: isBook() ? 'Empty = 2 × width (spread)' : 'Only if folded / opened up' }) + F.num('oh', `Open height (${U_})`)}
       ${isBook() ? F.num('pages', 'Number of pages', { ph: '16', hint: 'Multiple of 4' }) : ''}
       ${j.product === 'NCR' ? '' : F.sel('sides', 'Number of sides', [['1', '1 side'], ['2', '2 sides']], { dis: isBook(), hint: isBook() ? 'Booklets print both sides' : '' })}
-      ${F.num('bleed', 'Bleed (mm)', { ph: '3' })}
+      ${exactCut ? '<p class="hint">Exact-size cutting: no bleed or extra paper around the finished sheet.</p>' : F.num('bleed', 'Bleed (mm)', { ph: '3' })}
       <label class="f span2"><span>Notes</span><textarea data-k="notes" placeholder="Anything worth remembering about this job">${esc(j.notes)}</textarea></label>
     </div></section>`;
 
     const ncr = j.product === 'NCR';
-    if (ncr) jobCard = `<section class="card" id="job-details"><h3><span class="step-title"><i>1</i> Job &amp; NCR format</span></h3><div class="grid g2">${F.txt('name','Job name',{cls:'span2',ph:'e.g. A5 receipt books for client'})}${F.sel('product','Product type',E.PRODUCT_TYPES.map(p=>[p,p]),{r:1})}${F.sel('mode','Printing method',['offset','digital'].map(k=>[k,E.MODES[k]]),{r:1})}${ncrFormatHTML(j)}${sizeFieldsHTML(j)}</div><details class="adv" data-panel="ncr-job-advanced"><summary>More job options <span>Bleed, open size &amp; notes</span></summary><div class="grid g2">${F.num('bleed','Bleed (mm)',{ph:'3'})}${F.num('ow',`Open width (${U_})`,{hint:'Only for a folded form'})}${F.num('oh',`Open height (${U_})`)}<label class="f span2"><span>Notes</span><textarea data-k="notes">${esc(j.notes)}</textarea></label></div></details></section>`;
+    if (ncr) jobCard = `<section class="card" id="job-details"><h3><span class="step-title"><i>1</i> Job &amp; NCR format</span></h3><div class="grid g2">${F.txt('name','Job name',{cls:'span2',ph:'e.g. A5 receipt books for client'})}${F.sel('product','Product type',E.PRODUCT_TYPES.map(p=>[p,p]),{r:1})}${F.sel('mode','Printing method',['offset','digital'].map(k=>[k,E.MODES[k]]),{r:1})}${ncrFormatHTML(j)}${sizeFieldsHTML(j)}</div><details class="adv" data-panel="ncr-job-advanced"><summary>More job options <span>Bleed, open size &amp; notes</span></summary><div class="grid g2">${exactCut ? '<p class="hint span2">Exact-size cutting uses no bleed.</p>' : F.num('bleed','Bleed (mm)',{ph:'3'})}${F.num('ow',`Open width (${U_})`,{hint:'Only for a folded form'})}${F.num('oh',`Open height (${U_})`)}<label class="f span2"><span>Notes</span><textarea data-k="notes">${esc(j.notes)}</textarea></label></div></details></section>`;
     const quantityCard = ncr ? `<section class="card" id="ncr-quantity"><h3><span class="step-title"><i>4</i> Quantity</span><small>Books or complete sets</small></h3><div class="grid g2">${ncrQuantityHTML(j)}</div></section>` : '';
 
     const matOpts = [['', '— choose material —']].concat(DB.materials.filter(m => materialFits(m,j,'main')).map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
     const machOpts = [['', '— choose machine —']].concat(DB.machines.filter((m) => E.MODE_MACHINES[j.mode].includes(m.type)).map((m) => [m.id, m.name]));
     let layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · part 1' : 'Main printing material'}</h4><div class="grid g2">
       ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1, cls:ncr ? 'span2' : '' })}${materialPriceHTML(mat)}
-      ${ncr ? F.sel('ncrCutMode','How the stock is prepared',[['','Existing press-sheet workflow'],['exact','Cut to exact finished size before printing'],['press','Print on larger sheets, then trim']],{r:1,cls:'span2'}) + '<p class="hint span2">Exact-size cutting: one form per printing sheet. Material cost uses the cutting yield from the purchased parent sheet.</p>' : ''}
+      ${kind === 'sheet' ? F.sel('sheetCutMode','How the stock is prepared',[['exact','Cut to exact size before printing'],['press','Print on larger sheets, then trim']],{r:1,cls:'span2'}) + '<p class="hint span2">Show the parent-sheet cutting yield, then print each cut sheet separately. Folded jobs use the unfolded size.</p>' : ''}
       </div><details class="adv" data-panel="main-layout"><summary>Layout &amp; sheet cutting <span>${kind === 'roll' ? 'Roll' : 'Sheet'}</span></summary><div class="grid" style="margin-top:12px">
-      ${kind === 'sheet' && j.ncrCutMode !== 'exact' ? F.num('margin', 'Sheet margin, each edge (mm)', { hint: 'Not printable' }) + F.num('gripper', 'Gripper edge (mm)', { hint: 'Extra, one edge' }) : kind === 'roll' ? F.num('rollEdge', 'Roll edge margin, each side (mm)') : '<p class="hint span2">Cutting yield uses exact dimensions without bleed or gaps. Keep the printed artwork inside the machine’s gripper and non-printable edges.</p>'}
-      ${j.ncrCutMode !== 'exact' ? F.num('gutter', 'Gap between pieces (mm)') : ''}
-      ${kind === 'sheet' && j.ncrCutMode !== 'exact' ? F.num('pressW', 'Press sheet width (mm)', { ph: mat && mat.sheetW ? mat.sheetW : '' }) + F.num('pressH', 'Press sheet height (mm)', { ph: mat && mat.sheetH ? mat.sheetH : '' }) + F.num('parentDivisor', 'Press sheets per purchased sheet', { hint: 'Used with a manual press sheet size. Blank press dimensions use the machine capacity to cut the purchased sheet automatically.' }) : ''}
+      ${kind === 'sheet' && !exactCut ? F.num('margin', 'Sheet margin, each edge (mm)', { hint: 'Not printable' }) + F.num('gripper', 'Gripper edge (mm)', { hint: 'Extra, one edge' }) : kind === 'roll' ? F.num('rollEdge', 'Roll edge margin, each side (mm)') : '<p class="hint span2">Cutting yield uses exact dimensions without bleed or gaps. Keep the printed artwork inside the machine’s gripper and non-printable edges.</p>'}
+      ${!exactCut ? F.num('gutter', 'Gap between pieces (mm)') : ''}
+      ${kind === 'sheet' && !exactCut ? F.num('pressW', 'Press sheet width (mm)', { ph: mat && mat.sheetW ? mat.sheetW : '' }) + F.num('pressH', 'Press sheet height (mm)', { ph: mat && mat.sheetH ? mat.sheetH : '' }) + F.num('parentDivisor', 'Press sheets per purchased sheet', { hint: 'Used with a manual press sheet size. Blank press dimensions use the machine capacity to cut the purchased sheet automatically.' }) : ''}
       </div></details></div>`;
 
+    const profile=E.clickProfile(mach);
+    const clickColor=profile && profile.rates && profile.rates[j.clickClass] ? profile.rates[j.clickClass].color : mach ? mach.clickColor : '';
+    const clickBW=profile && profile.rates && profile.rates[j.clickClass] ? profile.rates[j.clickClass].bw : mach ? mach.clickBW : '';
     let printFields = '';
     if (costing === 'offset') {
       printFields = F.num('colors', 'Number of colours') + F.num('plates', 'Number of plates', { ph: 'auto', hint: 'Auto = colours × sides × designs' })
@@ -1524,7 +1559,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         + F.num('setupHours', 'Setup time (hours)', { ph: P.setupHours.offset, hint: 'Per design' }) + F.num('speed', 'Machine speed (impr./h)', { ph: mach ? mach.speed : '' });
     } else if (costing === 'digital') {
       printFields = F.sel('colorMode', 'Colour or B&W', [['color', 'Colour'], ['bw', 'Black & white']])
-        + F.num('clickColor', `Colour click (${cur()})`, { ph: mach ? mach.clickColor : '' }) + F.num('clickBW', `B&W click (${cur()})`, { ph: mach ? mach.clickBW : '' })
+        + F.num('clickColor', `${profile ? 'Colour click override' : 'Colour click'} (${cur()})`, { ph: clickColor }) + F.num('clickBW', `${profile ? 'B&W click override' : 'B&W click'} (${cur()})`, { ph: clickBW })
         + F.num('setupHours', 'Setup time (hours)', { ph: P.setupHours[j.mode] }) + F.num('speed', 'Machine speed (impr./h)', { ph: mach ? mach.speed : '' });
     } else {
       printFields = F.num('inkSqm', `Ink cost per m² (${cur()})`, { ph: P.areaInkPerSqm }) + F.num('machineSqm', `Machine cost per m² (${cur()})`, { ph: mach ? mach.costPerSqm : '' })
@@ -1534,11 +1569,11 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       const basic = F.sel('sides','Original printed sides',[['1','1 side'],['2','2 sides']]) + (costing === 'offset' ? F.num('colors','Printing colours',{ph:'1'}) : F.sel('colorMode','Colour or B&W',[['color','Colour'],['bw','Black & white']]));
       const advanced = costing === 'offset'
         ? F.num('plates','New plates for original',{ph:'auto'}) + F.num('plateCost',`Plate cost (${cur()})`,{ph:P.plateCost}) + F.num('inkRate',`Ink per 1,000 colour-sides (${cur()})`,{ph:P.offsetInkPer1000})
-        : F.num('clickColor',`Colour click (${cur()})`,{ph:mach ? mach.clickColor : ''}) + F.num('clickBW',`B&W click (${cur()})`,{ph:mach ? mach.clickBW : ''});
+        : F.num('clickColor',`${profile ? 'Colour click override' : 'Colour click'} (${cur()})`,{ph:clickColor}) + F.num('clickBW',`${profile ? 'B&W click override' : 'B&W click'} (${cur()})`,{ph:clickBW});
       layoutCard = layoutCard.replace('</div><details', `<div class="span2 printing-caption">Shared printing settings <small>Copies inherit these unless overridden</small></div>${basic}</div><details class="adv" data-panel="original-printing"><summary>Printing rates &amp; setup <span>Advanced</span></summary><div class="grid g2">${advanced}${F.num('setupHours','Setup time (hours)',{ph:P.setupHours[j.mode]})}${F.num('speed','Machine speed (impr./h)',{ph:mach ? mach.speed : ''})}</div></details><details`);
     }
     const machineInfo = mach ? `<div class="machine-overview"><b>${esc(mach.name)}</b><span>${num(mach.maxSheetW) > 0 ? `${num(mach.maxSheetW)/10} × ${num(mach.maxSheetH)/10} cm sheet capacity · ` : ''}${mach.type === 'offset' ? `${num(mach.colorUnits) || '?'} colours per pass` : esc(E.MACHINE_TYPES[mach.type])}</span>${isBlank(mach.hourlyRate) || isBlank(mach.speed) ? '<small>Complete this machine’s rates and speed in Machines before costing.</small>' : ''}</div>` : '<p class="hint">Choose a machine to calculate printing and sheet layout.</p>';
-    const printCard = `<section class="card" id="job-machine"><h3>${ncr ? '<span class="step-title"><i>2</i> Printing machine</span>' : '3 · Printing'}<small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid g2">${F.sel('machineId','Printing machine',machOpts,{r:1,cls:ncr ? 'span2' : ''})}${ncr ? '' : printFields}</div>${ncr ? machineInfo : '<p class="hint">Empty boxes use the rate from Machines or Settings. Type a number to override it for this job.</p>'}</section>`;
+    const printCard = `<section class="card" id="job-machine"><h3>${ncr ? '<span class="step-title"><i>2</i> Printing machine</span>' : '3 · Printing'}<small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid g2">${F.sel('machineId','Printing machine',machOpts,{r:1,cls:ncr ? 'span2' : ''})}${clickBillingHTML(j,mach)}${ncr ? '' : printFields}</div>${ncr ? machineInfo : '<p class="hint">Empty boxes use the rate from Machines or Settings. Type a number to override it for this job.</p>'}</section>`;
 
     const wasteCard = `<details class="adv" data-panel="main-waste"><summary>Main material waste <span>Defaults: ${WS.pct}%</span></summary><div class="grid" style="margin-top:12px">
       ${F.num('wastePct', 'Waste %', { ph: WS.pct })}
@@ -1663,14 +1698,15 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       if (exact) {
         const P=cut.parentLayout;
         diagram={...L,sheetW:cut.parentW,sheetH:cut.parentH,printW:cut.parentW,printH:cut.parentH,across:P.across,down:P.down,ups:P.ups,cellW:P.best.cw,cellH:P.best.ch,pw:P.best.pw,ph:P.best.ph};
-        rows=[['Purchased parent sheet',size(cut.parentW,cut.parentH)],['Cut to finished size',size(L.sheetW,L.sheetH)],['Finished sheets per parent',`<b>${cut.divisor}</b> · ${P.across} across × ${P.down} down`],['Forms per printing sheet','<b>1</b> · feed each finished sheet separately']];
+        rows=[['Purchased parent sheet',size(cut.parentW,cut.parentH)],[L.usesOpenSize ? 'Cut to unfolded printing size' : 'Cut to finished size',size(L.sheetW,L.sheetH)],['Finished sheets per parent',`<b>${cut.divisor}</b> · ${P.across} across × ${P.down} down`],['Forms per printing sheet','<b>1</b> · feed each finished sheet separately']];
+        if (L.flats>1) rows.push(['Designs / flats',`${L.flats} · ${s.pages} pages · ${L.goodPerFlat} sheets each`]);
       } else {
         rows=[['Printing sheet',size(L.sheetW,L.sheetH)],['Forms per printing sheet',`<b>${L.ups}</b> · ${L.across} across × ${L.down} down`],['Printable area',size(L.printW,L.printH)]];
         if (cut && cut.auto) rows.unshift(['Cutting the parent sheet',`${cut.divisor} printing sheets per purchased parent sheet`]);
         if (L.flats>1) rows.push(['Designs / flats',`${L.flats} · ${s.pages} pages · ${L.goodPerFlat} sheets each`]);
       }
     } else rows=[['Roll width',`${U.f(L.rollWidth/10,3)} cm`],['Usable width',`${U.f(L.usableW/10,3)} cm`],['Pieces across',`<b>${L.across}</b>`],['Rows',`${L.rows} · last row ${L.lastRow} pieces`],['Roll length needed',`${U.f(L.lengthM*100,3)} cm`]];
-    const cutting=group(exact ? '1 · Cut the stock before printing' : '1 · Layout & cutting',`<div class="need-layout"><figure>${L.kind==='sheet' ? sheetSVG(diagram) : rollSVG(diagram)}<figcaption>${exact ? 'Parent-sheet cutting plan · original stock' : 'Printing layout · main stock'}</figcaption></figure>${kv(rows)}</div>${exact ? '<p class="hint">Uniform cutting grid, no bleed. Keep artwork inside the press’s non-printable edges.</p>' : ''}`);
+    const cutting=group(exact ? '1 · Cut the stock before printing' : '1 · Layout & cutting',`<div class="need-layout"><figure>${L.kind==='sheet' ? sheetSVG(diagram) : rollSVG(diagram)}<figcaption>${exact ? 'Parent-sheet cutting plan · main stock' : 'Printing layout · main stock'}</figcaption></figure>${kv(rows)}</div>${exact ? '<p class="hint">Uniform cutting grid, no bleed. Keep artwork inside the press’s non-printable edges.</p>' : ''}`);
     const materials=r.materialRequirements || [];
     const materialRows=materials.map(x=>`<article class="need-stock"><h5>${x.index===-1 ? 'Original / main stock' : x.role==='ncr' ? `NCR copy ${x.index+1}` : esc(x.role)} <span>${esc(x.name)}</span></h5><div class="need-counts"><span><b>${U.f(x.good,3)}</b>Good</span><span><b>${U.f(x.waste,3)}</b>Waste</span><span><b>${U.f(x.total,3)}</b>Total ${esc(x.unit)}</span></div>${x.pressSheet && x.pressSheet.exact ? `<p class="hint">${size(x.pressSheet.parentW,x.pressSheet.parentH)} parent → ${x.pressSheet.divisor} finished sheets · ${U.f(x.total/x.pressSheet.divisor,3)} parent-sheet equivalents</p>` : ''}</article>`).join('');
     const material=group('2 · Materials & waste',materialRows + '<p class="hint">Waste is extra material for setup and production. Parent-sheet equivalents show prorated consumption.</p>' + materialRequirementsHTML(r));
@@ -1680,7 +1716,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       if (!p) return `<div class="need-print"><h5>${label}</h5><p class="hint">${p === null ? 'Paper only · no printing' : 'Printing details were not stored. Recalculate this job to see them.'}</p></div>`;
       const rr=[];
       if (p.plates!=null) rr.push(['Colours / passes',`${p.colours} colours · ${p.passes} pass${p.passes===1?'':'es'}`],['New plates',U.f(p.plates)],['Impressions',U.f(p.impressions)]);
-      else if (p.clicks!=null) rr.push(['Printing',`${U.f(p.clicks)} clicks · ${esc(p.colorMode)}`]);
+      else if (p.clicks!=null) rr.push(['Printing',`${U.f(p.clicks)} clicks · ${esc(p.colorMode)}${p.billingClass ? ' · '+esc(p.billingClass) : ''}`],['Rate per printed side',`${esc(cur())} ${U.f(p.clickRate,3)}`]);
       else rr.push(['Printed area',`${U.f(p.printedSqm,3)} m²`]);
       if (hours) rr.push(['Running time',`${U.f(hours.run*60,1)} min`],['Setup time',`${U.f(hours.setup*60,1)} min`]);
       return `<div class="need-print"><h5>${label}</h5>${kv(rr)}</div>`;
@@ -1841,7 +1877,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         { h: 'Speed', n: 1, f: (r) => (isBlank(r.speed) ? '—' : `${U.f(num(r.speed))} <small>${esc(E.SPEED_UNIT[r.type] || '')}</small>`) },
         { h: 'Cost / m²', n: 1, f: (r) => (E.MACHINE_FIELDS[r.type].includes('costPerSqm') ? nf(r.costPerSqm, 4) : '') },
         { h: 'Cost / impression', n: 1, f: (r) => (E.MACHINE_FIELDS[r.type].includes('costPerImpression') ? nf(r.costPerImpression, 4) : '') },
-        { h: 'Clicks (colour / B&W)', n: 1, f: (r) => (r.type === 'digital' ? `${nf(r.clickColor, 4)} / ${nf(r.clickBW, 4)}` : '') }
+        { h: 'Clicks (colour / B&W)', n: 1, f: (r) => (r.type === 'digital' ? (E.clickProfile(r) ? 'By billing size · Edit to view rates' : `${nf(r.clickColor, 4)} / ${nf(r.clickBW, 4)}`) : '') }
       ]
     },
     finishing: {
@@ -1877,7 +1913,9 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (key === 'machines') {
       const fl = E.MACHINE_FIELDS[d.type] || [];
       const map = { maxSheetW:n('maxSheetW','Maximum sheet width (mm)'), maxSheetH:n('maxSheetH','Maximum sheet height (mm)'), hourlyRate: n('hourlyRate', `Hourly rate (${cur()})`, { req: 1 }), setupRate: n('setupRate', `Setup rate (${cur()} / hour)`, { hint: 'Empty = same as hourly rate' }), speed: n('speed', `Speed (${E.SPEED_UNIT[d.type] || 'per hour'})`), colorUnits: n('colorUnits', 'Colours per pass (print units)', { hint: 'A 4-colour press prints CMYK in one pass' }), clickColor: n('clickColor', `Colour click cost (${cur()})`), clickBW: n('clickBW', `B&W click cost (${cur()})`), costPerImpression: n('costPerImpression', `Cost per impression (${cur()})`), costPerSqm: n('costPerSqm', `Cost per m² (${cur()})`) };
-      return [{ k: 'name', label: 'Machine name', type: 'text', req: 1, cls: 'span2' }, { k: 'type', label: 'Machine type', type: 'select', options: Object.keys(E.MACHINE_TYPES).map((k) => [k, E.MACHINE_TYPES[k]]), r: 1, cls: 'span2' }].concat(fl.map((k) => map[k])).concat(['offset','digital'].includes(d.type) ? [map.maxSheetW,map.maxSheetH] : []).concat([{ k: 'notes', label: 'Notes', type: 'text', cls: 'span2' }]);
+      const cp=E.clickProfile(d);
+      const sizeFields=cp ? ['a4','a3','long'].flatMap(c=>['color','bw'].map(mode=>n('rate_'+c+'_'+mode,`${E.CLICK_CLASSES[c]} · ${mode==='color' ? 'colour':'B&W'} (${cp.currency || 'AED'} / side)`,{req:1}))) : [];
+      return [{ k: 'name', label: 'Machine name', type: 'text', req: 1, cls: 'span2' }, { k: 'type', label: 'Machine type', type: 'select', options: Object.keys(E.MACHINE_TYPES).map((k) => [k, E.MACHINE_TYPES[k]]), r: 1, cls: 'span2' }].concat(fl.filter(k=>!cp || !['clickColor','clickBW'].includes(k)).map((k) => map[k])).concat(['offset','digital'].includes(d.type) ? [map.maxSheetW,map.maxSheetH] : []).concat(sizeFields).concat([{ k: 'notes', label: 'Notes', type: 'text', cls: 'span2' }]);
     }
     if (key === 'finishing') {
       const m = d.method;
@@ -1920,7 +1958,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   function formBody(key, d, errs) {
     errs = errs || {};
     const html = fieldDefs(key, d).map((f) => {
-      const v = cmValue(f.k,d[f.k] == null ? '' : d[f.k]); f.label = f.k === 'rollLength' ? 'Roll length (cm)' : cmLabel(f.label);
+      const v = cmValue(f.k,f.k==='notes' && key==='machines' ? String(d[f.k] || '').replace(/^Digital click rates: .+\r?\n?/gm,'').trim() : d[f.k] == null ? '' : d[f.k]); f.label = f.k === 'rollLength' ? 'Roll length (cm)' : cmLabel(f.label);
       const e = errs[f.k] ? `<i class="err">${esc(errs[f.k])}</i>` : '<i class="err"></i>';
       const inv = errs[f.k] ? ' aria-invalid="true"' : '';
       if (f.type === 'select') return `<label class="f ${f.cls || ''}"><span>${f.label}</span><select data-d="${f.k}"${f.r ? ' data-dr="1"' : ''}>${f.options.map((o) => opt(o[0], o[1], v)).join('')}</select></label>`;
@@ -1941,6 +1979,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       rec.stockUse=(String(rec.notes || '').match(/^Material purpose: (cb|cfb|cf|ncr|lamination|mounting)$/m) || [,''])[1];
       rec.notes=String(rec.notes || '').replace(/^Material purpose: (cb|cfb|cf|ncr|lamination|mounting)\r?\n?/gm,'').trim();
     }
+    if (key==='machines' && E.clickProfile(rec)) {const p=E.clickProfile(rec);rec.clickCurrency=p.currency;['a4','a3','long'].forEach(c=>['color','bw'].forEach(mode=>rec['rate_'+c+'_'+mode]=p.rates && p.rates[c] ? p.rates[c][mode] : ''));}
     modalCtx = { kind: 'form', key, draft: rec, isNew: !id };
     openModal(`<h2>${id ? 'Edit' : 'Add'} ${ENT[key].one}</h2><div class="grid g2" id="formbody">${formBody(key, rec)}</div><div class="foot"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="save-ent">Save ${ENT[key].one}</button></div>`);
   }
@@ -1955,6 +1994,11 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       delete out.stockUse;
     }
     fieldDefs(key, out).forEach((f) => { if (f.type === 'number') out[f.k] = isBlank(out[f.k]) ? '' : Number(out[f.k]); });
+    if (key==='machines' && out.clickCurrency) {
+      const rates={};['a4','a3','long'].forEach(c=>{rates[c]={};['color','bw'].forEach(mode=>{rates[c][mode]=Number(out['rate_'+c+'_'+mode]);delete out['rate_'+c+'_'+mode];});});
+      out.notes=String(out.notes || '').replace(/^Digital click rates: .+\r?\n?/gm,'').trim();
+      out.notes+=(out.notes ? '\n' : '')+'Digital click rates: '+JSON.stringify({currency:out.clickCurrency,rates});delete out.clickCurrency;
+    }
     delete out.demo;
     const i = DB[key].findIndex((x) => x.id === out.id);
     if (i >= 0) DB[key][i] = out; else DB[key].push(out);
@@ -2370,6 +2414,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         });
       }
       setPath(state.job, k, internalValue(k,v));
+      if (k === 'sheetCutMode' && e.type==='change') { if(v==='exact') {state.job.bleed=0;state.job.pressW='';state.job.pressH='';state.job.parentDivisor=1;} }
+      if (k === 'clickClass' && e.type==='change') {state.job.clickColor='';state.job.clickBW='';}
       if (k === 'materialId') delete state.job.ncrDefaultMaterialId;
       if (/^addMaterials\.\d+\.materialId$/.test(k)) delete state.job.addMaterials[Number(k.split('.')[1])].ncrDefaultMaterialId;
       if (['w', 'h', 'diameter'].includes(k)) {
@@ -2392,11 +2438,12 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
           if (v === 'NCR') {
             if (!state.job.addMaterials.some(r=>r.role==='ncr')) state.job.addMaterials.push(blankNcrCopy());
             if (previousProduct !== 'NCR') {
-              state.job.mode = 'offset'; state.job.colors = 1; state.job.ncrCutMode = 'exact'; state.job.bleed = 0; state.job.ow = ''; state.job.oh = '';
+              state.job.mode = 'offset'; state.job.colors = 1; state.job.ncrCutMode = 'exact'; state.job.sheetCutMode = 'exact'; state.job.bleed = 0; state.job.ow = ''; state.job.oh = '';
               const press = defaultNcrMachine(); state.job.machineId = press ? press.id : '';
               applyNcrMaterialDefaults(state.job,true);
             }
           }
+          if (previousProduct!==v) {state.job.sheetCutMode='exact';state.job.bleed=0;}
           autoPick(state.job);
         }
         if (/^addMaterials\.\d+\.role$/.test(k)) { const row = state.job.addMaterials[Number(k.split('.')[1])]; if (!materialFits(find(DB.materials,row.materialId) || {},state.job,v)) row.materialId=''; row.qty = v === 'manual' ? 1 : ''; row.printed = true; row.wastePct = ''; row.setupWaste = ''; }
