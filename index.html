@@ -310,6 +310,15 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   .quantity-fields>.f:first-child{grid-column:1/-1}
 }
 @container(max-width:260px){.compact-fields{grid-template-columns:minmax(0,1fr)}.compact-fields>.f{grid-column:1/-1}.compact-fields .f>span{white-space:normal}}
+
+/* Compact book controls and a live production summary. */
+.book-options{grid-column:1/-1;min-width:0;margin:4px 0;padding:14px;border:1px solid #d8e2e8;border-radius:10px;background:#f7fafc}
+.book-options legend{padding:0 6px;font-size:13px;font-weight:700;color:#19374a}
+.book-option-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px}
+.book-option-fields .f{min-width:0}
+.book-option-fields select,.book-option-fields input{min-width:0;width:100%}
+.book-usage{margin:12px 0 0;padding:10px 12px;border-radius:6px;background:#e8f3f8;color:#254457;font-size:12px;line-height:1.6}
+@container(max-width:360px){.book-option-fields{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -335,6 +344,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   const LIMIT = 1e9;            // no single input may exceed this
   const TOTAL_LIMIT = 1e12;     // no total may exceed this (also keeps cent rounding exact)
   const BOOK = ['Booklet', 'Book'];
+  function isBookJob(job) { return BOOK.includes(job.product) || (['Brochure','Menu'].includes(job.product) && job.format === 'book'); }
+  function bookPageUnit(job) { return job.bookAssembly === 'leaves' ? (Number(job.sides)===1 ? 1 : 2) : 4; }
   const PRODUCT_TYPES = ['Business Card', 'Flyer', 'Brochure', 'Booklet', 'Book', 'Letterhead', 'Envelope', 'NCR', 'Poster', 'Sticker', 'Label', 'Banner', 'Roll-up', 'Menu', 'Packaging', 'Box', 'Certificate', 'Invitation', 'Large Format', 'Custom'];
   const MODES = { offset: 'Offset', digital: 'Digital', large_format: 'Large format', sticker: 'Sticker (roll or sheet + cutting)' };
   const MODE_MACHINES = { offset: ['offset'], digital: ['digital'], large_format: ['large_format', 'uv'], sticker: ['digital', 'large_format', 'uv'] };
@@ -529,8 +540,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       const circle = job.mode === 'sticker' && job.shape === 'circle';
       const finishedW = num(circle ? job.diameter : job.w) * u, finishedH = num(circle ? job.diameter : job.h) * u;
       const opened = job.sheetCutMode === 'exact' && num(job.ow)>0 && num(job.oh)>0;
-      const book = job.sheetCutMode === 'exact' && BOOK.includes(job.product);
-      const w = opened ? num(job.ow)*u : book ? 2*finishedW : finishedW, h = opened ? num(job.oh)*u : finishedH;
+      const book = job.sheetCutMode === 'exact' && isBookJob(job);
+      const w = opened ? num(job.ow)*u : book && job.bookAssembly !== 'leaves' ? 2*finishedW : finishedW, h = opened ? num(job.oh)*u : finishedH;
       const parent = imposeSheet({pieceW:w,pieceH:h,sheetW:num(mat.sheetW),sheetH:num(mat.sheetH),margin:0,gripper:0,bleed:0,gutter:0});
       return {w,h,divisor:parent.ups,auto:false,exact:true,parentW:num(mat.sheetW),parentH:num(mat.sheetH),parentLayout:parent};
     }
@@ -564,8 +575,10 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       if (Math.abs(x) > LIMIT) return err(field, `${label} is unrealistically large (over ${LIMIT.toLocaleString('en-US')}). Check for an extra zero.`);
     };
     const circle = job.mode === 'sticker' && job.shape === 'circle';
-    const isBook = BOOK.includes(job.product);
+    const isBook = isBookJob(job);
 
+    if (['Brochure','Menu'].includes(job.product) && job.format && !['single','folded','book'].includes(job.format)) err('format','Choose single sheet, folded sheet or book.');
+    if (['Brochure','Menu'].includes(job.product) && job.format==='folded' && !(num(job.ow)>0 && num(job.oh)>0)) err('ow','Enter the unfolded width and height for a folded sheet.');
     const booksEntry = job.product === 'NCR' && job.ncrQuantityMode === 'books';
     if (booksEntry) chk(job, 'ncrBooks', 'Number of books/pads', { required: true, int: true, gt: 0 });
     chk(job, 'setsPerPad', 'Sets per pad/book', { required: booksEntry, int: true, gt: 0 });
@@ -577,8 +590,14 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (isBlank(job.ow) !== isBlank(job.oh)) err(isBlank(job.ow) ? 'ow' : 'oh', 'Enter both open width and open height, or leave both empty.');
     chk(job, 'pages', 'Pages', { int: true, min: 0 });
     if (isBook) {
-      if (!(num(job.pages) >= 4)) err('pages', 'Booklets and books need at least 4 pages.');
-      else if (num(job.pages) % 4 !== 0) warnings.push(`Pages (${num(job.pages)}) is not a multiple of 4 — calculated as ${Math.ceil(num(job.pages) / 4) * 4} pages.`);
+      const multiple = bookPageUnit(job);
+      if (!(num(job.pages) >= multiple)) err('pages', `Enter at least ${multiple} pages for this book format.`);
+      else if (num(job.pages) % multiple !== 0) warnings.push(`Pages (${num(job.pages)}) rounded to ${Math.ceil(num(job.pages)/multiple)*multiple} for ${multiple}-page printing sheets.`);
+      if (job.bookAssembly && !['folded','leaves'].includes(job.bookAssembly)) err('bookAssembly','Choose folded sheets or individual leaves.');
+      if (job.coverMode === 'separate' && (job.addMaterials || []).filter(r=>r.role==='cover').length!==1) err('coverMode','Choose one separate cover stock.');
+      if (job.bindingFinId && !find(db.finishing,job.bindingFinId)) err('bindingFinId','This binding operation no longer exists.');
+      chk(job,'bindingQty','Binding quantity / hours',{min:0});
+      if (job.bindingFinId && (job.finishing || []).some(r=>r.finId===job.bindingFinId)) err('bindingFinId','Binding is already selected here; remove the duplicate finishing row.');
     }
     if (![1, 2].includes(Number(job.sides))) err('sides', 'Sides must be 1 or 2.');
     ['bleed', 'margin', 'gripper', 'gutter', 'rollEdge'].forEach((k) => chk(job, k, { bleed: 'Bleed', margin: 'Margin', gripper: 'Gripper', gutter: 'Gap', rollEdge: 'Roll edge margin' }[k], { min: 0 }));
@@ -606,7 +625,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       if (role !== 'manual' && !r.materialId) err(`addMaterials.${i}.materialId`, 'Choose a material for this production layer.');
       if (r.feed && !['web','pieces'].includes(r.feed)) err(`addMaterials.${i}.feed`, 'Choose continuous roll or separate pieces.');
       if (role === 'ncr' && job.product !== 'NCR') err(`addMaterials.${i}.role`, 'NCR layers require the NCR product type.');
-      if (role === 'cover' && !(num(job.setsPerPad) > 0)) err('setsPerPad', 'Enter sets per pad/book to calculate covers.');
+      if (role === 'cover' && !isBook && !(num(job.setsPerPad) > 0)) err('setsPerPad', 'Enter sets per pad/book to calculate covers.');
       chk(r, 'wastePct', 'Material waste %', { min: 0, max: 100 }, `addMaterials.${i}.wastePct`);
       chk(r, 'setupWaste', 'Material setup waste', { min: 0 }, `addMaterials.${i}.setupWaste`);
       chk(r, 'opQty', 'Processing quantity', { min: 0 }, `addMaterials.${i}.opQty`);
@@ -683,7 +702,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         if (!materialUnitCost(mat, kind, sw, sh, cut.divisor)) err('materialId', `Material "${mat.name}" cannot be priced for ${kind === 'roll' ? 'a roll layout' : 'a sheet layout'} (missing roll length, roll width or sheet size).`);
       }
     }
-    const operations = [{id:job.lamFinId,field:'lamFinId'},{id:job.cutFinId,field:'cutFinId'}]
+    const operations = [{id:isBook ? job.bindingFinId : '',field:'bindingFinId'},{id:job.lamFinId,field:'lamFinId'},{id:job.cutFinId,field:'cutFinId'}]
       .concat((job.finishing || []).map((r,i) => ({id:r.finId,field:`finishing.${i}.finId`})))
       .concat((job.addMaterials || []).map((r,i) => ({id:r.finId,field:`addMaterials.${i}.finId`})));
     operations.forEach(({id,field}) => {
@@ -725,15 +744,15 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const circle = job.mode === 'sticker' && job.shape === 'circle';
     const W = (circle ? num(job.diameter) : num(job.w)) * u;
     const H = (circle ? num(job.diameter) : num(job.h)) * u;
-    const isBook = BOOK.includes(job.product);
+    const isBook = isBookJob(job);
     let OW = num(job.ow) * u, OH = num(job.oh) * u, openAuto = false;
-    if (isBook && !(OW > 0 && OH > 0)) { OW = 2 * W; OH = H; openAuto = true; }
+    if (isBook && !(OW > 0 && OH > 0)) { OW = job.bookAssembly === 'leaves' ? W : 2 * W; OH = H; openAuto = true; }
     const useOpen = OW > 0 && OH > 0;
     const pieceW = useOpen ? OW : W, pieceH = useOpen ? OH : H;
     const bleed = num(job.bleed), gutter = num(job.gutter), margin = num(job.margin), gripper = num(job.gripper);
-    const sides = isBook ? 2 : Number(job.sides) || 1;
-    const pages = isBook ? Math.ceil(num(job.pages) / 4) * 4 : 0;
-    const flats = isBook ? pages / 4 : 1;          // each flat = one open-size sheet printed both sides = 4 pages
+    const sides = isBook && job.bookAssembly !== 'leaves' ? 2 : Number(job.sides) || 1;
+    const pages = isBook ? Math.ceil(num(job.pages) / bookPageUnit(job)) * bookPageUnit(job) : 0;
+    const flats = isBook ? pages / bookPageUnit(job) : 1;          // folded sheets carry four pages; individual leaves carry one or two
     const costing = mach.type === 'offset' ? 'offset' : mach.type === 'digital' ? 'digital' : 'area';
     const hasPress = num(job.pressW) > 0 && num(job.pressH) > 0;
     const kind = layoutKind(job, mat, isBook);
@@ -884,8 +903,9 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         detail = { index: i, role, name: mm.name, materialId: mm.id, good: q, waste: 0, total: q, unit: b.label, unitCost: b.cost, cost: r2(cost), printingCost: 0, layout: null };
       } else {
         const layer = newJob(clone(job));
-        Object.assign(layer, { product: 'Custom', materialId: mm.id, addMaterials: [], finishing: [], labor: [], other: [], lamFinId: '', cutFinId: '', setsPerPad: '' });
-        const printed = role === 'ncr' && row.printed !== false;
+        Object.assign(layer, { product: 'Custom', materialId: mm.id, addMaterials: [], finishing: [], labor: [], other: [], lamFinId: '', cutFinId: '', setsPerPad: '', format:'single', bindingFinId:'', coverMode:'' });
+        const bookCover = role === 'cover' && isBook;
+        const printed = (role === 'ncr' || bookCover) && row.printed !== false;
         if (role === 'ncr') {
           layer.sides = isBlank(row.sides) ? job.sides : Number(row.sides);
           layer.colors = isBlank(row.colors) ? job.colors : row.colors;
@@ -897,10 +917,16 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
           layer.ncrCutMode = ''; layer.sheetCutMode = ''; layer.w = W / u; layer.h = H / u; layer.shape = 'rect'; layer.ow = ''; layer.oh = ''; layer.pages = ''; layer.pressW = ''; layer.pressH = ''; layer.parentDivisor = 1;
           layer.margin = 0; layer.gripper = 0; layer.rollEdge = 0; layer.sides = 1;
           if (role !== 'lamination') layer.bleed = 0;
-          if (role === 'cover') layer.qty = Math.ceil(qty / num(job.setsPerPad));
+          if (role === 'cover') layer.qty = isBook ? qty * (job.bookAssembly==='leaves' ? 2 : 1) : Math.ceil(qty / num(job.setsPerPad));
+          if (bookCover) {
+            layer.w = pieceW/u; layer.h = pieceH/u; layer.sheetCutMode = job.sheetCutMode;
+            layer.sides = isBlank(row.sides) ? (job.bookAssembly==='leaves' ? 1 : 2) : Number(row.sides);
+            layer.colors = isBlank(row.colors) ? job.colors : row.colors; layer.colorMode = row.colorMode || job.colorMode;
+            layer.plates = isBlank(row.plates) ? '' : row.plates; layer.setupHours = isBlank(row.setupHours) ? job.setupHours : row.setupHours;
+          }
         }
-        layer.wastePct = isBlank(row.wastePct) ? (role === 'ncr' ? (isBlank(job.wastePct) ? num(WS.pct) : job.wastePct) : 0) : row.wastePct;
-        layer.setupWaste = isBlank(row.setupWaste) ? (role === 'ncr' ? (isBlank(job.setupWaste) ? num(WS.setup) : job.setupWaste) : 0) : row.setupWaste;
+        layer.wastePct = isBlank(row.wastePct) ? ((role === 'ncr' || bookCover) ? (isBlank(job.wastePct) ? num(WS.pct) : job.wastePct) : 0) : row.wastePct;
+        layer.setupWaste = isBlank(row.setupWaste) ? ((role === 'ncr' || bookCover) ? (isBlank(job.setupWaste) ? num(WS.setup) : job.setupWaste) : 0) : row.setupWaste;
         layer.extraWaste = 0;
         layer._manualGoodUnits = isBlank(row.qty) ? null : num(row.qty);
         if (role === 'lamination' && (row.feed || 'web') === 'web' && kind === 'roll') {
@@ -930,7 +956,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       res.materialRequirements.push(detail);
       if (row.finId) {
         const op = find(db.finishing, row.finId); if (!op) return;
-        let basis = op.method === 'per_piece' ? (role === 'cover' ? Math.ceil(qty / num(job.setsPerPad)) : qty) : op.method === 'per_sheet' ? detail.good : op.method === 'per_sqm' ? qty * W * H / 1e6 : op.method === 'per_meter' ? (detail.layout && detail.layout.kind === 'roll' ? detail.good : qty * 2 * (W + H) / 1000) : op.method === 'fixed' ? 1 : 0;
+        let basis = op.method === 'per_piece' ? (role === 'cover' ? (isBook ? qty * (job.bookAssembly==='leaves' ? 2 : 1) : Math.ceil(qty / num(job.setsPerPad))) : qty) : op.method === 'per_sheet' ? detail.good : op.method === 'per_sqm' ? qty * W * H / 1e6 : op.method === 'per_meter' ? (detail.layout && detail.layout.kind === 'roll' ? detail.good : qty * 2 * (W + H) / 1000) : op.method === 'fixed' ? 1 : 0;
         if (!isBlank(row.opQty)) basis = num(row.opQty);
         else if (op.method === 'per_hour') res.warnings.push(`${prefix}: enter processing hours for ${op.name}.`);
         const raw = basis * num(op.rate), run = Math.max(raw, num(op.minCharge), num(S.minimums && S.minimums.finishing)), setup = num(op.setupCost);
@@ -940,6 +966,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       }
       if (role === 'lamination' && job.lamFinId) res.warnings.push('Lamination film is charged separately. Ensure the selected lamination operation excludes film, and select the processing operation only once.');
     });
+    if (isBook) {res.summary.books=qty;res.summary.pageUnit=bookPageUnit(job);res.summary.coverMode=job.coverMode || 'same';res.summary.bookAssembly=job.bookAssembly || 'folded';}
     if (job.product === 'NCR') {
       res.summary.ncrParts = 1 + (job.addMaterials || []).filter(r => r.role === 'ncr').length;
       if (num(job.setsPerPad) > 0) res.summary.pads = Math.ceil(qty / num(job.setsPerPad));
@@ -954,6 +981,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const goodSheets = kind === 'sheet' ? goodU + (job.product === 'NCR' ? res.materialRequirements.filter(x => x.role === 'ncr').reduce((a,x) => a + x.good, 0) : 0) : 0;
     const areaAuto = kind === 'sheet' ? (goodSheets * sheetW * sheetH) / 1e6 : goodU * (rollW / 1000);
     const finRows = (job.finishing || []).filter((r) => r && r.finId).map((r) => Object.assign({}, r));
+    if (isBook && job.bindingFinId) finRows.push({finId:job.bindingFinId,qty:job.bindingQty,mult:1,tag:'Binding'});
     if (job.mode === 'sticker') {
       if (job.lamFinId) finRows.push({ finId: job.lamFinId, tag: 'Lamination' });
       if (job.cutFinId) finRows.push({ finId: job.cutFinId, tag: 'Cutting' });
@@ -962,7 +990,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       const op = find(db.finishing, r.finId); if (!op) return;
       const method = FIN_METHODS[op.method] ? op.method : 'per_piece';
       let auto = 0, lbl = 'piece', autoTxt = '';
-      if (method === 'per_piece') { auto = qty; lbl = 'pieces'; autoTxt = 'job quantity'; }
+      if (method === 'per_piece') { auto = qty; lbl = isBook ? 'books' : 'pieces'; autoTxt = isBook ? 'complete books' : 'job quantity'; }
       else if (method === 'per_sheet') { auto = goodSheets; lbl = 'sheets'; autoTxt = job.product === 'NCR' ? 'good press sheets across all NCR parts' : 'good press sheets'; if (kind === 'roll' && isBlank(r.qty)) res.warnings.push(`"${op.name}" is priced per sheet but this job uses roll material — enter a quantity for it.`); }
       else if (method === 'per_meter') { auto = perimM; lbl = 'm'; autoTxt = 'cut length = perimeter of every piece'; }
       else if (method === 'per_sqm') { auto = areaAuto; lbl = 'm²'; autoTxt = kind === 'sheet' ? 'good sheets × sheet area' : 'good roll length × roll width'; }
@@ -1025,7 +1053,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   return {
     version: '1.1', UNIT_MM, PRODUCT_TYPES, MODES, MODE_MACHINES, FIN_METHODS, MAT_UNITS, MAT_CATS, MACHINE_TYPES, MACHINE_FIELDS, SPEED_UNIT, CATEGORIES, BOOK,
-    defaultSettings, newJob, validate, calculate, compare, CLICK_CLASSES, clickProfile, clickRate, pressSheet, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
+    isBookJob, bookPageUnit, defaultSettings, newJob, validate, calculate, compare, CLICK_CLASSES, clickProfile, clickRate, pressSheet, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
     util: { num, r2, f, m, isBlank, isNumeric, clone, find }
   };
 });
@@ -1372,7 +1400,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     ['lamFinId', 'cutFinId'].forEach((k) => { if (j[k] && !find(DB.finishing, j[k])) { j[k] = ''; cleared++; } });
     return { job: j, cleared };
   }
-  const isBook = () => E.BOOK.includes(state.job.product);
+  const isBook = () => E.isBookJob(state.job);
 
   /* ================= form field builders (calculator) ================= */
   const val = (k) => { const v = getPath(state.job, k); return v == null ? '' : v; };
@@ -1498,6 +1526,17 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     return F.sel('clickClass','Digital billing counter',[['','— choose billing counter —'],...Object.entries(E.CLICK_CLASSES)],{r:1,cls:'span2'})+`<div class="notice info span2">${selected}<br><small>Use the sheet fed into the press, not the finished piece size. Confirm the counter used for SRA3 and long sheets. Rates exclude VAT.</small></div>`;
   }
 
+  function bookUsageText(j) {
+    const pages=Number(j.pages), unit=E.bookPageUnit(j), sheets=Math.ceil(pages/unit), books=Number(j.qty);
+    if(!(pages>0 && Number.isInteger(pages))) return 'Enter the pages per book to see the sheet requirement.';
+    const actualPages=sheets*unit, leaf=j.bookAssembly==='leaves';
+    return `${pages} ${j.coverMode==='separate' ? 'inside' : 'total'} pages → ${sheets} ${leaf ? 'leaves' : 'folded sheets'} per book · ${leaf && Number(j.sides)===1 ? 'one-sided' : 'two-sided'} printing${actualPages!==pages ? ` · rounded to ${actualPages} pages` : ''}${Number.isInteger(books) && books>0 ? ` · ${U.f(sheets*books)} good sheets for ${U.f(books)} books, before waste` : ''}. ${j.coverMode==='separate' ? 'Separate cover printing is set in Materials.' : 'The cover is included in this page count.'}`;
+  }
+  function bookOptionsHTML(j) {
+    const folded=j.bookAssembly!=='leaves';
+    return `<fieldset class="book-options"><legend>Book pages &amp; printing</legend><div class="book-option-fields">${F.sel('bookAssembly','Construction',[['folded','Folded sheets · staple / stitch'],['leaves','Individual leaves · spiral / glue']],{r:1})}${F.sel('sides','Inside printing',folded ? [['2','Both sides · required for folded sheets']] : [['1','One side · 1 page per leaf'],['2','Both sides · 2 pages per leaf']],{r:1,dis:folded,hint:folded ? 'Four pages per folded sheet.' : 'Blank backs are not counted as printed pages.'})}${F.num('pages',j.coverMode==='separate' ? 'Inside pages per book' : 'Total pages per book',{ph:'20',hint:j.coverMode==='separate' ? 'Exclude the separate cover.' : 'Include the same-paper cover.'})}${F.sel('coverMode','Cover',[['same','Same paper as inside'],['separate','Separate cover stock']],{r:1})}</div><p class="book-usage" id="book-usage-summary" aria-live="polite">${esc(bookUsageText(j))}</p></fieldset>`;
+  }
+
   function sizeFieldsHTML(j) {
     const circle=j.mode==='sticker' && j.shape==='circle';
     return `<div class="compact-fields size-fields${circle ? ' circle-size-fields' : ''} span2">${sizePickerHTML(j,true)}${circle ? F.num('diameter',`Diameter (${j.unit})`) : F.num('w',`Width (${j.unit})`) + F.num('h',`Height (${j.unit})`)}${F.sel('unit','Unit',[['cm','cm'],['mm','mm'],['m','m']],{r:1})}</div><p class="compact-help span2">Choose a preset or enter your own dimensions. Presets use cm.</p>`;
@@ -1508,6 +1547,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   function viewCalc() {
     const j = state.job;
+    if (E.isBookJob(j) && j.bookAssembly!=='leaves') j.sides=2;
     if (!j.sheetCutMode) { j.sheetCutMode = j.ncrCutMode || 'exact'; if(j.sheetCutMode==='exact') j.bleed=0; }
     const mat = find(DB.materials, j.materialId), mach = find(DB.machines, j.machineId);
     const pressOv = num(j.pressW) > 0 && num(j.pressH) > 0;
@@ -1522,14 +1562,14 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     let jobCard = `<section class="card"><h3>1 · Job</h3><div class="grid">
       ${F.txt('name', 'Job name', { cls: 'span2', ph: 'e.g. Menu cards for client job 1042' })}
       ${F.sel('product', 'Product type', E.PRODUCT_TYPES.map((p) => [p, p]), { r: 1 })}
+      ${['Brochure','Menu'].includes(j.product) ? F.sel('format','Format',[['single','Single sheet'],['folded','Folded sheet'],['book','Book / booklet']],{r:1}) : ''}
       ${F.sel('mode', 'Printing method', Object.keys(E.MODES).map((k) => [k, E.MODES[k]]), { r: 1 })}
-      ${j.product === 'NCR' ? ncrQuantityHTML(j) : F.num('qty', 'Quantity (pieces)', {ph: '1000'})}
+      ${j.product === 'NCR' ? ncrQuantityHTML(j) : F.num('qty', isBook() ? 'Quantity (complete books)' : 'Quantity (pieces)', {ph: '1000'})}
       ${j.mode === 'sticker' ? F.sel('shape', 'Sticker shape', [['rect', 'Rectangle'], ['circle', 'Circle'], ['custom', 'Custom shape']], { r: 1 }) : ''}
       ${sizeFieldsHTML(j)}
       ${j.mode === 'sticker' && j.shape === 'custom' ? F.num('cutLen', 'Cut path per piece (mm)', { hint: 'Empty = bounding box perimeter' }) : ''}
-      ${circle ? '' : F.num('ow', `Open width (${U_})`, { hint: isBook() ? 'Empty = 2 × width (spread)' : 'Only if folded / opened up' }) + F.num('oh', `Open height (${U_})`)}
-      ${isBook() ? F.num('pages', 'Number of pages', { ph: '16', hint: 'Multiple of 4' }) : ''}
-      ${j.product === 'NCR' ? '' : F.sel('sides', 'Number of sides', [['1', '1 side'], ['2', '2 sides']], { dis: isBook(), hint: isBook() ? 'Booklets print both sides' : '' })}
+      ${circle ? '' : F.num('ow', `Open width (${U_})`, { hint: isBook() ? (j.bookAssembly==='leaves' ? 'Individual leaf: leave blank' : 'Empty = 2 × width (spread)') : 'Only if folded / opened up' }) + F.num('oh', `Open height (${U_})`)}
+      ${isBook() ? bookOptionsHTML(j) : j.product === 'NCR' ? '' : F.sel('sides', 'Number of sides', [['1', '1 side'], ['2', '2 sides']])}
       ${exactCut ? '<p class="hint">Exact-size cutting: no bleed or extra paper around the finished sheet.</p>' : F.num('bleed', 'Bleed (mm)', { ph: '3' })}
       <label class="f span2"><span>Notes</span><textarea data-k="notes" placeholder="Anything worth remembering about this job">${esc(j.notes)}</textarea></label>
     </div></section>`;
@@ -1540,7 +1580,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
     const matOpts = [['', '— choose material —']].concat(DB.materials.filter(m => materialFits(m,j,'main')).map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
     const machOpts = [['', '— choose machine —']].concat(DB.machines.filter((m) => E.MODE_MACHINES[j.mode].includes(m.type)).map((m) => [m.id, m.name]));
-    let layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · part 1' : 'Main printing material'}</h4><div class="grid g2">
+    let layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · part 1' : isBook() ? 'Inside pages · printing stock' : 'Main printing material'}</h4><div class="grid g2">
       ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1, cls:ncr ? 'span2' : '' })}${materialPriceHTML(mat)}
       ${kind === 'sheet' ? F.sel('sheetCutMode','How the stock is prepared',[['exact','Cut to exact size before printing'],['press','Print on larger sheets, then trim']],{r:1,cls:'span2'}) + '<p class="hint span2">Show the parent-sheet cutting yield, then print each cut sheet separately. Folded jobs use the unfolded size.</p>' : ''}
       </div><details class="adv" data-panel="main-layout"><summary>Layout &amp; sheet cutting <span>${kind === 'roll' ? 'Roll' : 'Sheet'}</span></summary><div class="grid" style="margin-top:12px">
@@ -1595,9 +1635,10 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     }).join('');
     const stickerFin = j.mode === 'sticker' ? `<div class="grid g2" style="margin-bottom:12px">${F.sel('cutFinId', 'Cutting method', [['', 'None']].concat(DB.finishing.map((f) => [f.id, f.name])), { r: 1 })}</div>` : '';
     const finCard = `<section class="card"><h3>${ncr ? '<span class="step-title"><i>5</i> Finishing</span>' : '4 · Finishing'} <small>each stage is costed separately</small></h3>
-      <div class="chain">${chain.map((c, i) => (i ? '<i>→</i>' : '') + `<b>${esc(c)}</b>`).join('')}</div>${stickerFin}
+      <div class="chain">${chain.map((c, i) => (i ? '<i>→</i>' : '') + `<b>${esc(c)}</b>`).join('')}</div>${stickerFin}${isBook() && j.bindingFinId ? '<p class="hint">Binding: '+esc((find(DB.finishing,j.bindingFinId) || {}).name || 'Missing operation')+'</p>' : ''}
       <div class="rows">${finRows || '<p class="hint" style="margin:0">No finishing operations added.</p>'}</div>
       <div style="margin-top:10px"><button class="btn sm" data-act="add" data-list="finishing">Add finishing operation</button></div>
+      ${isBook() ? '<div class="grid g2">'+F.sel('bindingFinId','Book binding',[['','None / choose binding']].concat(DB.finishing.filter(f=>/bind|stitch|stapl|spiral|glue/i.test(f.name)).map(f=>[f.id,f.name])),{r:1})+ (j.bindingFinId ? F.num('bindingQty',(find(DB.finishing,j.bindingFinId) || {}).method==='per_hour' ? 'Binding hours' : 'Binding quantity override',{ph:'auto',hint:'Per-piece binding uses the number of complete books.'}) : '')+'</div><p class="hint">Use the binding selector once. Add folding and other finishing as separate operations above.</p>' : ''}
       <p class="hint">Quantity “auto” follows the operation's pricing method: pieces/sets, good sheets (all NCR parts for NCR), cut length (perimeter of all pieces), area, or once per job. “Times” multiplies it (e.g. 2 for both sides, 4 eyelets). Tick “Scales” to let the row grow with quantity in the comparison table.</p></section>`;
 
     const labOpts = [['', '— choose —']].concat(DB.labor.map((l) => [l.id, l.category]));
@@ -1609,7 +1650,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       <div style="margin-top:10px"><button class="btn sm" data-act="add" data-list="labor">Add labor operation</button></div>
       <p class="hint">Machine setup time is already costed at the machine's setup rate. Add labor only for people-time that is not already inside a machine rate.</p></section>`;
 
-    const roles = [['manual', 'Other / manual quantity'], ['ncr', 'NCR copy layer'], ['lamination', 'Lamination film'], ['mounting', 'Mounting board'], ['cover', 'Cover / backing per pad']];
+    const roles = [['manual', 'Other / manual quantity'], ['ncr', 'NCR copy layer'], ['lamination', 'Lamination film'], ['mounting', 'Mounting board'], ['cover', isBook() ? 'Separate book cover' : 'Cover / backing per pad']];
     const addRows = j.addMaterials.map((r, i) => {
 
       const mm = find(DB.materials, r.materialId), b = mm ? E.matBasis(mm) : null, k = `addMaterials.${i}`, role = r.role || 'manual';
@@ -1622,7 +1663,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         ${F.sel(k + '.materialId',role === 'ncr' ? 'Copy NCR stock' : 'Stock',role === 'ncr' ? copyOpts : roleOpts,{r:1,cls:role === 'ncr' ? 'span2' : ''})}${materialPriceHTML(mm)}
         ${!auto ? F.num(k + '.qty', `Quantity${b ? ' (' + b.label + ')' : ''}`, {ph: '1'}) : ''}
         ${role === 'lamination' ? F.sel(k + '.feed', 'Lamination method', [['web', 'Continuous printed roll (same length)'], ['pieces', 'Separate cut pieces (own layout)']], {r: 1, hint: 'Continuous requires film as wide as the printing roll. Separate pieces assumes you cut and rearrange them first.'}) : ''}
-        ${role === 'ncr' ? ncrCopySettingsHTML(k,r,costing,i) : ''}
+        ${role === 'ncr' ? ncrCopySettingsHTML(k,r,costing,i) : role==='cover' && isBook() ? F.chk(k+'.printed','Print the cover') + F.sel(k+'.sides','Cover printed sides',[['','Default for book construction'],['1','One side'],['2','Both sides']],{r:1}) + F.sel(k+'.colorMode','Cover colour',[['','Same as inside'],['color','Colour'],['bw','Black & white']],{r:1}) + F.num(k+'.colors','Cover offset colours',{ph:'same as inside'}) + F.num(k+'.plates','Cover plate override',{ph:'auto'}) + F.num(k+'.setupHours','Cover setup hours',{ph:'job default'}) : ''}
         ${role === 'ncr' ? `<details class="adv span2" data-panel="copy-${i}-processing"${r.finId ? ' open' : ''}><summary>Processing for this copy <span>Optional</span></summary><div class="grid g2">` : ''}
         ${F.sel(k + '.finId', 'Processing operation (optional)', [['', 'None']].concat(DB.finishing.map(f => [f.id, f.name])), {r: 1})}
         ${r.finId ? F.num(k + '.opQty', op && op.method === 'per_hour' ? 'Processing hours' : 'Processing quantity override', {ph: 'auto', hint: 'Per m² uses finished area; per sheet uses good sheets; per metre uses roll length or sheet-piece perimeter.'}) : ''}
@@ -1699,20 +1740,20 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         const P=cut.parentLayout;
         diagram={...L,sheetW:cut.parentW,sheetH:cut.parentH,printW:cut.parentW,printH:cut.parentH,across:P.across,down:P.down,ups:P.ups,cellW:P.best.cw,cellH:P.best.ch,pw:P.best.pw,ph:P.best.ph};
         rows=[['Purchased parent sheet',size(cut.parentW,cut.parentH)],[L.usesOpenSize ? 'Cut to unfolded printing size' : 'Cut to finished size',size(L.sheetW,L.sheetH)],['Finished sheets per parent',`<b>${cut.divisor}</b> · ${P.across} across × ${P.down} down`],['Forms per printing sheet','<b>1</b> · feed each finished sheet separately']];
-        if (L.flats>1) rows.push(['Designs / flats',`${L.flats} · ${s.pages} pages · ${L.goodPerFlat} sheets each`]);
+        if (L.flats>1) rows.push(['Inside sheets per book',`${L.flats} · ${s.pages} pages · ${L.goodPerFlat} sheets each`]);
       } else {
         rows=[['Printing sheet',size(L.sheetW,L.sheetH)],['Forms per printing sheet',`<b>${L.ups}</b> · ${L.across} across × ${L.down} down`],['Printable area',size(L.printW,L.printH)]];
         if (cut && cut.auto) rows.unshift(['Cutting the parent sheet',`${cut.divisor} printing sheets per purchased parent sheet`]);
-        if (L.flats>1) rows.push(['Designs / flats',`${L.flats} · ${s.pages} pages · ${L.goodPerFlat} sheets each`]);
+        if (L.flats>1) rows.push(['Inside sheets per book',`${L.flats} · ${s.pages} pages · ${L.goodPerFlat} sheets each`]);
       }
     } else rows=[['Roll width',`${U.f(L.rollWidth/10,3)} cm`],['Usable width',`${U.f(L.usableW/10,3)} cm`],['Pieces across',`<b>${L.across}</b>`],['Rows',`${L.rows} · last row ${L.lastRow} pieces`],['Roll length needed',`${U.f(L.lengthM*100,3)} cm`]];
     const cutting=group(exact ? '1 · Cut the stock before printing' : '1 · Layout & cutting',`<div class="need-layout"><figure>${L.kind==='sheet' ? sheetSVG(diagram) : rollSVG(diagram)}<figcaption>${exact ? 'Parent-sheet cutting plan · main stock' : 'Printing layout · main stock'}</figcaption></figure>${kv(rows)}</div>${exact ? '<p class="hint">Uniform cutting grid, no bleed. Keep artwork inside the press’s non-printable edges.</p>' : ''}`);
     const materials=r.materialRequirements || [];
     const materialRows=materials.map(x=>`<article class="need-stock"><h5>${x.index===-1 ? 'Original / main stock' : x.role==='ncr' ? `NCR copy ${x.index+1}` : esc(x.role)} <span>${esc(x.name)}</span></h5><div class="need-counts"><span><b>${U.f(x.good,3)}</b>Good</span><span><b>${U.f(x.waste,3)}</b>Waste</span><span><b>${U.f(x.total,3)}</b>Total ${esc(x.unit)}</span></div>${x.pressSheet && x.pressSheet.exact ? `<p class="hint">${size(x.pressSheet.parentW,x.pressSheet.parentH)} parent → ${x.pressSheet.divisor} finished sheets · ${U.f(x.total/x.pressSheet.divisor,3)} parent-sheet equivalents</p>` : ''}</article>`).join('');
     const material=group('2 · Materials & waste',materialRows + '<p class="hint">Waste is extra material for setup and production. Parent-sheet equivalents show prorated consumption.</p>' + materialRequirementsHTML(r));
-    const printRows=materials.filter(x=>x.index===-1 || x.role==='ncr').map(x=>{
+    const printRows=materials.filter(x=>x.index===-1 || x.role==='ncr' || (s.books && x.role==='cover')).map(x=>{
       const p=x.index===-1 ? s.printing : x.printing, hours=x.index===-1 ? s.machineHours : x.machineHours;
-      const label=x.index===-1 ? 'Original / main stock' : `NCR copy ${x.index+1}`;
+      const label=x.index===-1 ? (s.books ? 'Inside pages' : 'Original / main stock') : x.role==='cover' ? 'Separate cover' : `NCR copy ${x.index+1}`;
       if (!p) return `<div class="need-print"><h5>${label}</h5><p class="hint">${p === null ? 'Paper only · no printing' : 'Printing details were not stored. Recalculate this job to see them.'}</p></div>`;
       const rr=[];
       if (p.plates!=null) rr.push(['Colours / passes',`${p.colours} colours · ${p.passes} pass${p.passes===1?'':'es'}`],['New plates',U.f(p.plates)],['Impressions',U.f(p.impressions)]);
@@ -1742,7 +1783,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         <div class="lbl">Total production cost</div><div class="big"><small>${esc(cur())}</small>${U.m(r.total)}</div>
         <div class="two"><div><div class="lbl">${j.product === 'NCR' ? 'Complete sets' : 'Quantity'}</div><div class="v">${U.f(r.qty)}</div></div><div><div class="lbl">${j.product === 'NCR' ? 'Cost per set' : 'Cost per piece'}</div><div class="v">${perPieceFmt(r.perPiece)}</div></div></div>
         <div class="strip"><i></i><i></i><i></i><i></i></div></div></div>
-      <div class="saveline">${saveBtns}</div>${editBanner}${warn}${j.product === 'NCR' ? `<div class="notice info">${r.summary.ncrParts} parts per set${r.summary.pads ? ` · ${r.summary.pads} pads/books · average ${money(r.total / r.summary.pads)} per pad/book${r.qty % num(j.setsPerPad) ? ' (last pad is partial)' : ''}` : ''}</div>` : ''}
+      <div class="saveline">${saveBtns}</div>${editBanner}${warn}${r.summary.books ? `<div class="notice info">${r.summary.books} complete books · ${r.summary.pages} ${j.coverMode==='separate' ? 'inside' : 'total'} pages per book · ${r.summary.flats} inside printing sheets per book${j.coverMode==='separate' ? ' · separate cover' : ''}</div>` : ''}${j.product === 'NCR' ? `<div class="notice info">${r.summary.ncrParts} parts per set${r.summary.pads ? ` · ${r.summary.pads} pads/books · average ${money(r.total / r.summary.pads)} per pad/book${r.qty % num(j.setsPerPad) ? ' (last pad is partial)' : ''}` : ''}</div>` : ''}
       <section class="card job-needs-card"><h3>What the job needs</h3>${requirementHTML(r)}</section>
       <section class="card"><h3>Cost breakdown <small>${esc(j.name || 'Untitled job')}</small></h3>${breakdownHTML(r)}</section>
       <section class="card"><h3>How the total is built</h3>${formulaHTML(r)}</section>`;
@@ -1763,6 +1804,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     box.innerHTML = `<table class="tbl tight"><thead><tr><th class="n">Quantity</th><th class="n">Total cost</th><th class="n">Cost / piece</th><th></th></tr></thead><tbody>${rows.map((x) => x.ok ? `<tr><td class="n">${U.f(x.qty)}</td><td class="n">${money(x.total)}</td><td class="n">${perPieceFmt(x.perPiece)}</td><td style="width:70px"><span class="bar" style="width:${Math.max(3, (x.perPiece / max) * 60).toFixed(0)}px"></span></td></tr>` : `<tr><td class="n">${U.f(x.qty)}</td><td colspan="3" class="err">${esc(x.errors[0] ? x.errors[0].msg : 'Cannot calculate')}</td></tr>`).join('')}</tbody></table><p class="hint">Rows ticked “Scales” grow with the quantity; other manual hours, quantities and costs stay fixed.</p>`;
   }
   function recalc() {
+    const bookUsage=$('#book-usage-summary'); if(bookUsage) bookUsage.textContent=bookUsageText(state.job);
     const j = state.job;
     if (j.product === 'NCR' && j.ncrQuantityMode === 'books') {
       j.qty = isBlank(j.ncrBooks) || isBlank(j.setsPerPad) ? '' : Number(j.ncrBooks) * Number(j.setsPerPad);
@@ -2423,8 +2465,13 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         const picker = $('#sizepreset'); if (picker) picker.value = 'custom';
       }
       if (e.type === 'change' && t.dataset.r) {
+        if (k === 'format' || k === 'bookAssembly' || k === 'coverMode') {
+          if(k==='format') {state.job.ow='';state.job.oh=''; if(v==='book') {state.job.sides=2;if(!state.job.pages) state.job.pages=20;} else {state.job.pages='';state.job.bindingFinId='';state.job.bindingQty='';state.job.coverMode='same';state.job.addMaterials=state.job.addMaterials.filter(r=>r.role!=='cover');}}
+          if(k==='bookAssembly') {state.job.ow='';state.job.oh='';if(v==='folded') state.job.sides=2;}
+          if(k==='coverMode' && isBook()) {if(v==='separate' && !state.job.addMaterials.some(r=>r.role==='cover')) state.job.addMaterials.push({role:'cover',materialId:'',qty:'',printed:true,sides:'',colors:'',colorMode:'',wastePct:'',setupWaste:'',finId:'',opQty:''});if(v==='same') state.job.addMaterials=state.job.addMaterials.filter(r=>r.role!=='cover');}
+        }
         if (k === 'product') {
-          if (previousProduct!==v) state.job.machineId='';
+          if (previousProduct!==v) {state.job.machineId='';state.job.format='single';state.job.pages='';state.job.bookAssembly='folded';state.job.coverMode='same';state.job.bindingFinId='';state.job.bindingQty='';if(previousProduct!=='NCR') state.job.addMaterials=state.job.addMaterials.filter(r=>r.role!=='cover');}
           if (previousProduct==='NCR' && v!=='NCR') {
             const defaults=E.newJob();
             state.job.addMaterials=state.job.addMaterials.filter(r=>!['ncr','cover'].includes(r.role));
@@ -2434,7 +2481,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
             state.job.sides=['Brochure','Flyer','Menu'].includes(v) ? 2 : 1;
           }
           const pm = PRODUCT_MODE[v]; if (pm) state.job.mode = pm; else if (state.job.mode !== 'offset' && state.job.mode !== 'digital') state.job.mode = 'digital';
-          if (E.BOOK.includes(v)) state.job.sides = 2;
+          if (E.BOOK.includes(v)) {state.job.sides = 2;state.job.pages=20;}
           if (v === 'NCR') {
             if (!state.job.addMaterials.some(r=>r.role==='ncr')) state.job.addMaterials.push(blankNcrCopy());
             if (previousProduct !== 'NCR') {
