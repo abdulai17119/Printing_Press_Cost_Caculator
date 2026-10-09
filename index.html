@@ -319,6 +319,9 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 .book-option-fields select,.book-option-fields input{min-width:0;width:100%}
 .book-usage{margin:12px 0 0;padding:10px 12px;border-radius:6px;background:#e8f3f8;color:#254457;font-size:12px;line-height:1.6}
 @container(max-width:360px){.book-option-fields{grid-template-columns:minmax(0,1fr)}}
+
+.material-group th{background:#edf4f8;color:#24475b;font-size:13px;text-align:left;border-top:1px solid #d7e3ea;padding:12px 14px}
+.material-group th span{margin-left:8px;font-weight:400;font-size:12px;color:#607686}
 </style>
 </head>
 <body>
@@ -1313,6 +1316,39 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (category==='foam board' || /foam\s*(?:board|core)|mounting\s*board/.test(name)) return 'mounting';
     return '';
   }
+  function materialGroup(m) {
+    const purpose=materialPurpose(m), name=String(m.name || '').toLowerCase(), cat=String(m.category || '');
+    const finish=/matte?|matt/.test(name) ? 'Matte' : /gloss/.test(name) ? 'Gloss' : '';
+    if(purpose==='cb') return [0,'NCR · CB originals'];
+    if(purpose==='cfb') return [1,'NCR · CFB middle copies'];
+    if(purpose==='cf') return [2,'NCR · CF last copies'];
+    if(purpose==='ncr') return [3,'NCR · Other papers'];
+    if(purpose==='lamination') return [finish==='Matte' ? 40 : finish==='Gloss' ? 41 : 42,'Lamination film · '+(finish || 'Other')];
+    if(purpose==='mounting') return [50,/foam/.test(name+' '+cat.toLowerCase()) ? 'Boards · Foam board' : 'Boards · Mounting board'];
+    if(['Paper','Card'].includes(cat)) return /art.*matte?|art.*matt/.test(name) ? [10,'Printing paper · Art Matt'] : /art.*gloss/.test(name) ? [11,'Printing paper · Art Gloss'] : /uncoat|woodfree|wood free|bond|offset paper/.test(name) ? [12,'Printing paper · Uncoated / bond'] : cat==='Card' ? [14,'Card stocks'] : [13,'Printing paper · Other'];
+    if(cat==='Sticker') return [20,'Stickers · Paper / adhesive stocks'];
+    if(cat==='Vinyl') return [21,'Stickers · Vinyl'];
+    if(cat==='PVC') return [22,'PVC materials'];
+    if(cat==='Banner') return [30,'Banner materials'];
+    if(cat==='Fabric') return [31,'Fabric materials'];
+    if(cat==='Packaging') return [51,'Packaging stocks'];
+    if(cat==='Ink') return [60,'Inks'];
+    if(cat==='Hardware') return [61,'Hardware'];
+    return [70,cat && cat!=='Other' ? cat+' materials' : 'Other materials'];
+  }
+  function materialSort(a,b) {
+    const ga=materialGroup(a), gb=materialGroup(b);
+    const gsm=m=> {const v=parseFloat(m.gsm);if(Number.isFinite(v)) return v;const match=String(m.name || '').match(/(\d+(?:\.\d+)?)\s*gsm/i);return match ? Number(match[1]) : Infinity;};
+    return ga[0]-gb[0] || ga[1].localeCompare(gb[1]) || (gsm(a)<gsm(b) ? -1 : gsm(a)>gsm(b) ? 1 : 0) || String(a.name).localeCompare(String(b.name),undefined,{numeric:true,sensitivity:'base'}) || num(a.sheetW)-num(b.sheetW) || num(a.sheetH)-num(b.sheetH) || (a.demo ? 1 : 0)-(b.demo ? 1 : 0);
+  }
+  function groupedMaterialOptions(materials,placeholder) {
+    const options=[['',placeholder]], groups=new Map();
+    materials.slice().sort(materialSort).forEach(m=>{const label=materialGroup(m)[1];if(!groups.has(label)){const g={label,options:[]};groups.set(label,g);options.push(g);}groups.get(label).options.push([m.id,matLabel(m)+(E.materialMode(m)==='roll' ? '  [roll]' : '')]);});
+    return options;
+  }
+  function selectOptionsHTML(options,selected) {
+    return options.map(x=>Array.isArray(x) ? opt(x[0],x[1],selected) : `<optgroup label="${esc(x.label)}">${selectOptionsHTML(x.options,selected)}</optgroup>`).join('');
+  }
   function materialFits(m,j,role) {
     const purpose=materialPurpose(m), sheet=E.materialMode(m)==='sheet';
     if (role==='ncr') return sheet && ['cfb','cf','ncr'].includes(purpose);
@@ -1411,7 +1447,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   const F = {
     num: (k, label, o) => { o = o || {}; label = cmLabel(label); return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="number" step="any" inputmode="decimal" value="${esc(cmValue(k,val(k)))}" placeholder="${esc(cmValue(k,o.ph == null ? '' : o.ph))}"><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
     txt: (k, label, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><input data-k="${k}" type="text" value="${esc(val(k))}" placeholder="${esc(o.ph || '')}"><i class="err" data-err="${k}"></i></label>`; },
-    sel: (k, label, options, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><select data-k="${k}"${o.r ? ' data-r="1"' : ''}${o.dis ? ' disabled' : ''}>${options.map((x) => opt(x[0], x[1], val(k) === '' && k === 'ncrQuantityMode' ? 'sets' : val(k) === '' && k.endsWith('.role') ? 'manual' : val(k) === '' && k.endsWith('.feed') ? 'web' : val(k))).join('')}</select><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
+    sel: (k, label, options, o) => { o = o || {}; return `<label class="f${o.cls ? ' ' + o.cls : ''}"><span>${label}</span><select data-k="${k}"${o.r ? ' data-r="1"' : ''}${o.dis ? ' disabled' : ''}>${selectOptionsHTML(options, val(k) === '' && k === 'ncrQuantityMode' ? 'sets' : val(k) === '' && k.endsWith('.role') ? 'manual' : val(k) === '' && k.endsWith('.feed') ? 'web' : val(k))}</select><i class="err" data-err="${k}"></i>${o.hint ? `<small>${o.hint}</small>` : ''}</label>`; },
     chk: (k, label) => `<label class="chk"><input type="checkbox" data-k="${k}"${getPath(state.job, k) ? ' checked' : ''}> ${label}</label>`
   };
   const matLabel = (m) => { const n = matNeeds(m); return m.name + (n.price ? '  — needs price' : n.size ? '  — needs size' : ''); };
@@ -1578,7 +1614,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (ncr) jobCard = `<section class="card" id="job-details"><h3><span class="step-title"><i>1</i> Job &amp; NCR format</span></h3><div class="grid g2">${F.txt('name','Job name',{cls:'span2',ph:'e.g. A5 receipt books for client'})}${F.sel('product','Product type',E.PRODUCT_TYPES.map(p=>[p,p]),{r:1})}${F.sel('mode','Printing method',['offset','digital'].map(k=>[k,E.MODES[k]]),{r:1})}${ncrFormatHTML(j)}${sizeFieldsHTML(j)}</div><details class="adv" data-panel="ncr-job-advanced"><summary>More job options <span>Bleed, open size &amp; notes</span></summary><div class="grid g2">${exactCut ? '<p class="hint span2">Exact-size cutting uses no bleed.</p>' : F.num('bleed','Bleed (mm)',{ph:'3'})}${F.num('ow',`Open width (${U_})`,{hint:'Only for a folded form'})}${F.num('oh',`Open height (${U_})`)}<label class="f span2"><span>Notes</span><textarea data-k="notes">${esc(j.notes)}</textarea></label></div></details></section>`;
     const quantityCard = ncr ? `<section class="card" id="ncr-quantity"><h3><span class="step-title"><i>4</i> Quantity</span><small>Books or complete sets</small></h3><div class="grid g2">${ncrQuantityHTML(j)}</div></section>` : '';
 
-    const matOpts = [['', '— choose material —']].concat(DB.materials.filter(m => materialFits(m,j,'main')).map((m) => [m.id, matLabel(m) + (E.materialMode(m) === 'roll' ? '  [roll]' : '')]));
+    const matOpts = groupedMaterialOptions(DB.materials.filter(m => materialFits(m,j,'main')),'— choose material —');
     const machOpts = [['', '— choose machine —']].concat(DB.machines.filter((m) => E.MODE_MACHINES[j.mode].includes(m.type)).map((m) => [m.id, m.name]));
     let layoutCard = `<div class="material-layer main-material"><h4>${j.product === 'NCR' ? 'Original · part 1' : isBook() ? 'Inside pages · printing stock' : 'Main printing material'}</h4><div class="grid g2">
       ${F.sel('materialId', j.product === 'NCR' ? 'Original NCR stock' : 'Printing stock', matOpts, { r: 1, cls:ncr ? 'span2' : '' })}${materialPriceHTML(mat)}
@@ -1655,8 +1691,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
       const mm = find(DB.materials, r.materialId), b = mm ? E.matBasis(mm) : null, k = `addMaterials.${i}`, role = r.role || 'manual';
       const op = find(DB.finishing, r.finId), auto = role !== 'manual';
-      const roleOpts = [['','— choose suitable material —']].concat(DB.materials.filter(m=>materialFits(m,j,role)).map(m=>[m.id,matLabel(m)]));
-      const copyOpts = [['','— choose NCR stock —']].concat(DB.materials.filter(m => materialFits(m,j,'ncr')).map(m => [m.id,matLabel(m)]));
+      const roleOpts = groupedMaterialOptions(DB.materials.filter(m=>materialFits(m,j,role)),'— choose suitable material —');
+      const copyOpts = groupedMaterialOptions(DB.materials.filter(m => materialFits(m,j,'ncr')),'— choose NCR stock —');
       const title = role === 'ncr' ? `Copy ${j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length} · part ${1 + j.addMaterials.slice(0,i+1).filter(x => x.role === 'ncr').length}` : (roles.find(x => x[0] === role) || roles[0])[1];
       return `<div class="material-layer" data-material-index="${i}"><h4>${esc(title)}<button class="btn sm" data-act="del" data-list="addMaterials" data-i="${i}" aria-label="Remove ${esc(title)}">Remove</button></h4><div class="grid g2">
         ${role === 'ncr' && ncr ? '' : F.sel(k + '.role', 'Purpose', roles, {r:1})}
@@ -2048,9 +2084,11 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   }
   function crudRows(key) {
     const cfg = ENT[key], q = (state.q[key] || '').toLowerCase(), lock = !canEdit();
-    const rows = DB[key].filter((r) => (!q || cfg.search.some((f) => String(r[f] == null ? '' : r[f]).toLowerCase().includes(q))) && !(key === 'materials' && state.needsOnly && matReady(r))).sort((x, y) => (x.demo ? 1 : 0) - (y.demo ? 1 : 0));
+    const rows = DB[key].filter((r) => (!q || cfg.search.some((f) => String(r[f] == null ? '' : r[f]).toLowerCase().includes(q))) && !(key === 'materials' && state.needsOnly && matReady(r))).sort(key==='materials' ? materialSort : (x, y) => (x.demo ? 1 : 0) - (y.demo ? 1 : 0));
     const n = cfg.cols.length + 1;
-    return { count: `${rows.length} of ${DB[key].length}`, html: rows.map((r) => `<tr>${cfg.cols.map((c) => `<td class="${c.n ? 'n' : ''}">${c.f(r)}</td>`).join('')}<td class="rowact">${lock ? '' : `<button class="lnk" data-act="edit-ent" data-ent="${key}" data-id="${esc(r.id)}">Edit</button><button class="lnk danger" data-act="del-ent" data-ent="${key}" data-id="${esc(r.id)}">Delete</button>`}</td></tr>`).join('') || `<tr><td class="empty" colspan="${n}">${DB[key].length ? 'Nothing matches your search.' : `No ${cfg.title.toLowerCase()} yet. Add your first ${cfg.one}.`}</td></tr>` };
+    let previousGroup='';
+    const groupHeader=r=>{if(key!=='materials') return '';const group=materialGroup(r)[1];if(group===previousGroup) return '';previousGroup=group;const count=rows.filter(m=>materialGroup(m)[1]===group).length;return `<tr class="material-group"><th colspan="${n}" scope="colgroup">${esc(group)} <span>${count} stock${count===1 ? '' : 's'}</span></th></tr>`;};
+    return { count: `${rows.length} of ${DB[key].length}`, html: rows.map((r) => `${groupHeader(r)}<tr>${cfg.cols.map((c) => `<td class="${c.n ? 'n' : ''}">${c.f(r)}</td>`).join('')}<td class="rowact">${lock ? '' : `<button class="lnk" data-act="edit-ent" data-ent="${key}" data-id="${esc(r.id)}">Edit</button><button class="lnk danger" data-act="del-ent" data-ent="${key}" data-id="${esc(r.id)}">Delete</button>`}</td></tr>`).join('') || `<tr><td class="empty" colspan="${n}">${DB[key].length ? 'Nothing matches your search.' : `No ${cfg.title.toLowerCase()} yet. Add your first ${cfg.one}.`}</td></tr>` };
   }
   const lockBanner = () => (canEdit() ? '' : `<div class="notice info">You're signed in as staff, so you can calculate and view everything, but only an admin can edit rates.</div>`);
   const demoBanner = (key) => (DB[key].some((r) => r.demo) ? '<div class="notice">Rows marked <span class="demo">DEMO</span> are placeholder data to show how the system works. They are not real prices — edit them or remove them in Settings → Data.</div>' : '');
@@ -2063,7 +2101,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     }
     return head(cfg.title, cfg.sub, canEdit() ? `<button class="btn primary" data-act="add-ent" data-ent="${key}">Add ${cfg.one}</button>` : '')
       + lockBanner() + needNote + demoBanner(key)
-      + `<div class="card"><div class="toolbar"><input type="search" class="search" data-q="${key}" placeholder="Search ${cfg.title.toLowerCase()}…" value="${esc(state.q[key] || '')}" aria-label="Search"><span class="count" id="crudcount">${rs.count}</span></div><div class="tscroll"><table class="tbl"><thead><tr>${cfg.cols.map((c) => `<th class="${c.n ? 'n' : ''}">${c.h}</th>`).join('')}<th></th></tr></thead><tbody id="crudbody">${rs.html}</tbody></table></div></div>`;
+      + `<div class="card"><div class="toolbar"><input type="search" class="search" data-q="${key}" placeholder="Search ${key==='materials' ? 'name, GSM, category or supplier' : cfg.title.toLowerCase()}…" value="${esc(state.q[key] || '')}" aria-label="Search"><span class="count" id="crudcount">${rs.count}</span></div><div class="tscroll"><table class="tbl"><thead><tr>${cfg.cols.map((c) => `<th class="${c.n ? 'n' : ''}">${c.h}</th>`).join('')}<th></th></tr></thead><tbody id="crudbody">${rs.html}</tbody></table></div></div>`;
   }
 
   /* ================= saved calculations ================= */
