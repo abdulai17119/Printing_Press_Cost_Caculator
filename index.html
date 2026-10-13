@@ -348,6 +348,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
   const TOTAL_LIMIT = 1e12;     // no total may exceed this (also keeps cent rounding exact)
   const BOOK = ['Booklet', 'Book'];
   function isBookJob(job) { return BOOK.includes(job.product) || (['Brochure','Menu'].includes(job.product) && job.format === 'book'); }
+  function fixedSpoilage(job) { return job.spoilageMode === 'fixed' || (isBlank(job.spoilageMode) && isBlank(job.wastePct) && isBlank(job.setupWaste) && num(job.extraWaste) === 0); }
   function bookPageUnit(job) { return job.bookAssembly === 'leaves' ? (Number(job.sides)===1 ? 1 : 2) : 4; }
   const PRODUCT_TYPES = ['Business Card', 'Flyer', 'Brochure', 'Booklet', 'Book', 'Letterhead', 'Envelope', 'NCR', 'Poster', 'Sticker', 'Label', 'Banner', 'Roll-up', 'Menu', 'Packaging', 'Box', 'Certificate', 'Invitation', 'Large Format', 'Custom'];
   const MODES = { offset: 'Offset', digital: 'Digital', large_format: 'Large format', sticker: 'Sticker (roll or sheet + cutting)' };
@@ -411,8 +412,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       pressW: '', pressH: '', parentDivisor: 1,
       margin: 5, gripper: 0, gutter: 0, rollEdge: 0,
       colors: 4, colorMode: 'color', clickClass:'', plates: '', plateCost: '', inkRate: '',
-      setupHours: '', speed: '', clickColor: '', clickBW: '', inkSqm: '', machineSqm: '',
-      wastePct: '', setupWaste: '', extraWaste: 0,
+      setupCount: '', setupHours: '', speed: '', clickColor: '', clickBW: '', inkSqm: '', machineSqm: '',
+      spoilageMode: '', spoilageSheets: '', wastePct: '', setupWaste: '', extraWaste: 0,
       shape: 'rect', diameter: '', cutLen: '', cutFinId: '', lamFinId: '',
       setsPerPad: '', finishing: [], labor: [], addMaterials: [], other: []
     }, o || {});
@@ -606,6 +607,9 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     ['bleed', 'margin', 'gripper', 'gutter', 'rollEdge'].forEach((k) => chk(job, k, { bleed: 'Bleed', margin: 'Margin', gripper: 'Gripper', gutter: 'Gap', rollEdge: 'Roll edge margin' }[k], { min: 0 }));
     chk(job, 'colors', 'Number of colours', { int: true, min: 0 });
     chk(job, 'plates', 'Number of plates', { int: true, min: 0 });
+    chk(job, 'setupCount', 'Printing setups', { int: true, min: 1 });
+    chk(job, 'spoilageSheets', 'Total extra sheets', { int: true, min: 0 });
+    if (!isBlank(job.spoilageMode) && !['fixed','detailed'].includes(job.spoilageMode)) err('spoilageMode','Choose a valid spoilage allowance method.');
     ['plateCost', 'inkRate', 'setupHours', 'clickColor', 'clickBW', 'inkSqm', 'machineSqm', 'extraWaste', 'setupWaste', 'cutLen'].forEach((k) => chk(job, k, 'This value', { min: 0 }));
     chk(job, 'speed', 'Machine speed', { gt: 0 });
     chk(job, 'wastePct', 'Waste %', { min: 0, max: 100 });
@@ -771,7 +775,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const wastePct = isBlank(job.wastePct) ? num(WS.pct) : num(job.wastePct);
     const setupPerRun = isBlank(job.setupWaste) ? num(WS.setup) : num(job.setupWaste);
     const minWaste = num(WS.min), extraWaste = num(job.extraWaste);
-    const runs = costing === 'offset' ? flats : 1;
+    const runs = isBlank(job.setupCount) ? 1 : num(job.setupCount);
+    if (costing === 'offset' && isBook && flats > 1 && isBlank(job.setupCount)) res.warnings.push('Printing setup defaults to 1. Enter the actual number of setups for plate changes; book sheets do not determine setup count.');
     const rU = kind === 'sheet' ? Math.ceil : (x) => x;
 
     /* ---- layout + units of material ---- */
@@ -807,10 +812,16 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     if (job._manualGoodUnits != null) goodU = num(job._manualGoodUnits);
 
     /* ---- waste ---- */
-    const pctWaste = rU(goodU * wastePct / 100);
-    const runWaste = Math.max(pctWaste, rU(minWaste));
-    const setupWaste = rU(setupPerRun * runs);
-    const addWaste = rU(extraWaste);
+    const fixedAllowance = costing === 'offset' && kind === 'sheet' && fixedSpoilage(job);
+    const budget = isBlank(job.spoilageSheets) ? 15 : num(job.spoilageSheets);
+    const allowanceLayers = fixedAllowance ? (job.addMaterials || []).filter(row => (row.role === 'ncr' || (row.role === 'cover' && isBook)) && row.printed !== false && isBlank(row.wastePct) && isBlank(row.setupWaste) && materialMode(find(db.materials,row.materialId) || {}) === 'sheet') : [];
+    const allowanceShare = Math.floor(budget / (1 + allowanceLayers.length));
+    const allowanceRemainder = budget % (1 + allowanceLayers.length);
+    const fixedSheets = allowanceShare + (allowanceRemainder > 0 ? 1 : 0);
+    const pctWaste = fixedAllowance ? 0 : rU(goodU * wastePct / 100);
+    const runWaste = fixedAllowance ? 0 : Math.max(pctWaste, rU(minWaste));
+    const setupWaste = fixedAllowance ? 0 : rU(setupPerRun * runs);
+    const addWaste = fixedAllowance ? fixedSheets : rU(extraWaste);
     const wasteU = runWaste + setupWaste + addWaste;
     const totalU = goodU + wasteU;
     const wf = totalU > 0 ? wasteU / totalU : 0;
@@ -837,11 +848,21 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     };
 
     /* ---- MATERIAL ---- */
-    const rawMat = totalU * uc.cost;
+    const consumedMat = totalU * uc.cost;
+    const parentPurchase = cut.exact && kind==='sheet' ? {sheets:Math.ceil(totalU/cut.divisor),sheetsPerParent:cut.divisor,equivalents:totalU/cut.divisor,parentUnitCost:uc.cost*cut.divisor} : null;
+    if(parentPurchase) {parentPurchase.cutSheets=parentPurchase.sheets*cut.divisor;parentPurchase.spare=parentPurchase.cutSheets-totalU;}
+    const rawMat = parentPurchase ? parentPurchase.sheets*parentPurchase.parentUnitCost : consumedMat;
     const minMat = num(mat.minCharge) > 0 ? num(mat.minCharge) : num(S.minimums && S.minimums.material);
     const matTotal = Math.max(rawMat, minMat);
     const matFormula = `${f(goodU, dp)} good + ${f(wasteU, dp)} spoiled = ${f(totalU, dp)} ${unitName} × ${f(uc.cost, 4)} per ${uc.label}${uc.note || ''} = ${m(rawMat)}` + (minMat > rawMat ? ` → minimum charge ${m(minMat)} applies` : '');
-    addVar('material', mat.name, matFormula, matTotal, true);
+    const consumedTotal = Math.max(consumedMat,minMat);
+    const consumedFormula = parentPurchase ? `${f(goodU,dp)} good + ${f(wasteU,dp)} waste = ${f(totalU,dp)} cut sheets × ${f(uc.cost,6)} base rate` + (minMat>consumedMat ? ` → minimum charge ${m(minMat)}` : '') : matFormula;
+    addVar('material', mat.name, consumedFormula, consumedTotal, true);
+    if(parentPurchase) {
+      parentPurchase.cost=r2(matTotal);parentPurchase.roundingCost=r2(r2(matTotal)-r2(consumedTotal));
+      add('material',`${mat.name} — whole parent-sheet rounding`,`${f(totalU)} required ÷ ${cut.divisor} per parent → ${parentPurchase.sheets} whole parents (${parentPurchase.cutSheets} cut sheets). ${parentPurchase.spare} spare cut sheets are not printed.`,parentPurchase.roundingCost);
+    }
+    res.summary.requirement.parentPurchase=parentPurchase;
 
 
     /* ---- PRINTING + MACHINE + SETUP ---- */
@@ -889,13 +910,13 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       Object.assign(res.summary.printing, { printedSqmGood: printedGood, printedSqm: printedTotal, areaPerPiece: cellArea, inkRate });
     }
     const setupHrs = (isBlank(job.setupHours) ? num(P.setupHours && P.setupHours[job.mode]) : num(job.setupHours)) * runs;
-    add('setup', `${mach.name} — setup`, `${f(setupHrs, 3)} h${runs > 1 ? ` (${runs} designs)` : ''} × ${m(setupRate)} setup rate`, setupHrs * setupRate, true);
-    res.summary.machineHours = { run: runHours, setup: setupHrs };
+    add('setup', `${mach.name} — setup`, `${f(setupHrs, 3)} h (${runs} printing setup${runs === 1 ? '' : 's'}) × ${m(setupRate)} setup rate`, setupHrs * setupRate, true);
+    res.summary.machineHours = { run: runHours, setup: setupHrs, setupCount: runs };
 
     /* ---- Additional materials: independent layouts, quantities and operations ---- */
     res.materialRequirements = [{ index: -1, role: job.product === 'NCR' ? 'Original' : 'Main', name: mat.name,
       materialId: mat.id, layout, pressSheet:cut, good: goodU, waste: wasteU, total: totalU, unit: unitName, unitCost: uc.cost,
-      cost: r2(matTotal), printingCost: 0 }];
+      cost: r2(matTotal), printingCost: 0, parentPurchase, wasteBreakdown:{production:runWaste,setup:setupWaste,additional:addWaste,pct:wastePct,minimumApplied:runWaste>pctWaste,fixedAllowance} }];
     (job.addMaterials || []).forEach((row, i) => {
       const mm = find(db.materials, row.materialId); if (!mm) return;
       const role = row.role || 'manual', prefix = `${role === 'ncr' ? 'NCR copy' : role === 'lamination' ? 'Lamination film' : role === 'mounting' ? 'Mounting board' : role === 'cover' ? 'Cover / backing' : 'Other material'} ${i + 1}`;
@@ -931,6 +952,16 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         layer.wastePct = isBlank(row.wastePct) ? ((role === 'ncr' || bookCover) ? (isBlank(job.wastePct) ? num(WS.pct) : job.wastePct) : 0) : row.wastePct;
         layer.setupWaste = isBlank(row.setupWaste) ? ((role === 'ncr' || bookCover) ? (isBlank(job.setupWaste) ? num(WS.setup) : job.setupWaste) : 0) : row.setupWaste;
         layer.extraWaste = 0;
+        layer.spoilageMode = 'detailed';
+        if (fixedAllowance) {
+          const shareIndex = allowanceLayers.indexOf(row);
+          layer.wastePct = isBlank(row.wastePct) ? 0 : row.wastePct;
+          layer.setupWaste = isBlank(row.setupWaste) ? 0 : row.setupWaste;
+          if (shareIndex >= 0) {
+            layer.spoilageMode = 'fixed';
+            layer.spoilageSheets = allowanceShare + (shareIndex + 1 < allowanceRemainder ? 1 : 0);
+          }
+        }
         layer._manualGoodUnits = isBlank(row.qty) ? null : num(row.qty);
         if (role === 'lamination' && (row.feed || 'web') === 'web' && kind === 'roll') {
           if (materialMode(mm) !== 'roll' || num(mm.rollWidth) < rollW) {
@@ -953,8 +984,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
         categories.forEach((c) => lr.lines[c].forEach((l) => res.lines[c].push(Object.assign({}, l, { label: `${prefix} — ${l.label}` }))));
         const req = lr.summary.requirement;
         detail = { index: i, role, name: mm.name, materialId: mm.id, layout: lr.layout, pressSheet:lr.pressSheet, printing:printed ? lr.summary.printing : null, machineHours:printed ? lr.summary.machineHours : null, good: req.good, waste: req.waste, total: req.total, unit: lr.summary.unitName,
-          unitCost: req.perUnit, cost: r2(lr.lines.material.reduce((a,l)=>a+l.amount,0) + lr.lines.waste.filter(l=>l.label.startsWith(mm.name)).reduce((a,l)=>a+l.amount,0)),
-          printingCost: printed ? r2(lr.total - Math.max(req.total * req.perUnit, num(mm.minCharge), num(S.minimums && S.minimums.material))) : 0 };
+          unitCost: req.perUnit, cost:lr.materialRequirements[0].cost, parentPurchase:req.parentPurchase, wasteBreakdown:lr.materialRequirements[0].wasteBreakdown,
+          printingCost: printed ? r2(lr.total - lr.materialRequirements[0].cost) : 0 };
       }
       res.materialRequirements.push(detail);
       if (row.finId) {
@@ -1056,7 +1087,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
 
   return {
     version: '1.1', UNIT_MM, PRODUCT_TYPES, MODES, MODE_MACHINES, FIN_METHODS, MAT_UNITS, MAT_CATS, MACHINE_TYPES, MACHINE_FIELDS, SPEED_UNIT, CATEGORIES, BOOK,
-    isBookJob, bookPageUnit, defaultSettings, newJob, validate, calculate, compare, CLICK_CLASSES, clickProfile, clickRate, pressSheet, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
+    isBookJob, bookPageUnit, fixedSpoilage, defaultSettings, newJob, validate, calculate, compare, CLICK_CLASSES, clickProfile, clickRate, pressSheet, imposeSheet, imposeRoll, matDerived, matBasis, materialMode, materialUnitCost,
     util: { num, r2, f, m, isBlank, isNumeric, clone, find }
   };
 });
@@ -1630,9 +1661,9 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const clickBW=profile && profile.rates && profile.rates[j.clickClass] ? profile.rates[j.clickClass].bw : mach ? mach.clickBW : '';
     let printFields = '';
     if (costing === 'offset') {
-      printFields = F.num('colors', 'Number of colours') + F.num('plates', 'Number of plates', { ph: 'auto', hint: 'Auto = colours × sides × designs' })
+      printFields = F.num('colors', 'Number of colours') + F.num('plates', 'Number of plates', { ph: 'auto', hint: 'Auto = colours × sides × book printing sheets. Override for reused artwork.' })
         + F.num('plateCost', `Plate cost (${cur()})`, { ph: P.plateCost }) + F.num('inkRate', `Ink per 1,000 colour-sides (${cur()})`, { ph: P.offsetInkPer1000 })
-        + F.num('setupHours', 'Setup time (hours)', { ph: P.setupHours.offset, hint: 'Per design' }) + F.num('speed', 'Machine speed (impr./h)', { ph: mach ? mach.speed : '' });
+        + F.num('setupCount', 'Printing setups', { ph: 1, hint: 'Default 1. Enter actual setups for plate changes, independently of pages per book.' }) + F.num('setupHours', 'Time per setup (hours)', { ph: P.setupHours.offset, hint: 'Total setup = count × time × machine setup rate per hour.' }) + F.num('speed', 'Machine speed (impr./h)', { ph: mach ? mach.speed : '' });
     } else if (costing === 'digital') {
       printFields = F.sel('colorMode', 'Colour or B&W', [['color', 'Colour'], ['bw', 'Black & white']])
         + F.num('clickColor', `${profile ? 'Colour click override' : 'Colour click'} (${cur()})`, { ph: clickColor }) + F.num('clickBW', `${profile ? 'B&W click override' : 'B&W click'} (${cur()})`, { ph: clickBW })
@@ -1651,7 +1682,9 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const machineInfo = mach ? `<div class="machine-overview"><b>${esc(mach.name)}</b><span>${num(mach.maxSheetW) > 0 ? `${num(mach.maxSheetW)/10} × ${num(mach.maxSheetH)/10} cm sheet capacity · ` : ''}${mach.type === 'offset' ? `${num(mach.colorUnits) || '?'} colours per pass` : esc(E.MACHINE_TYPES[mach.type])}</span>${isBlank(mach.hourlyRate) || isBlank(mach.speed) ? '<small>Complete this machine’s rates and speed in Machines before costing.</small>' : ''}</div>` : '<p class="hint">Choose a machine to calculate printing and sheet layout.</p>';
     const printCard = `<section class="card" id="job-machine"><h3>${ncr ? '<span class="step-title"><i>2</i> Printing machine</span>' : '3 · Printing'}<small>${costing === 'offset' ? 'Offset' : costing === 'digital' ? 'Digital clicks' : 'Area based (per m²)'}</small></h3><div class="grid g2">${F.sel('machineId','Printing machine',machOpts,{r:1,cls:ncr ? 'span2' : ''})}${clickBillingHTML(j,mach)}${ncr ? '' : printFields}</div>${ncr ? machineInfo : '<p class="hint">Empty boxes use the rate from Machines or Settings. Type a number to override it for this job.</p>'}</section>`;
 
-    const wasteCard = `<details class="adv" data-panel="main-waste"><summary>Main material waste <span>Defaults: ${WS.pct}%</span></summary><div class="grid" style="margin-top:12px">
+    const fixedAllowance = costing === 'offset' && kind === 'sheet' && E.fixedSpoilage(j);
+    if (costing === 'offset' && kind === 'sheet' && isBlank(j.spoilageMode)) j.spoilageMode = fixedAllowance ? 'fixed' : 'detailed';
+    const wasteCard = costing === 'offset' && kind === 'sheet' ? `<details class="adv" data-panel="main-waste"><summary>Printing spoilage allowance <span>${fixedAllowance ? (isBlank(j.spoilageSheets) ? 15 : esc(j.spoilageSheets))+' sheets total' : 'Detailed allowance'}</span></summary><div class="grid" style="margin-top:12px">${F.sel('spoilageMode','Allowance method',[['fixed','Fixed total sheets'],['detailed','Percentage + setup']],{r:1})}${fixedAllowance ? F.num('spoilageSheets','Total extra sheets per job',{ph:15,hint:'Includes setup tests and printing spoilage together. Default 15; enter 10 or any actual allowance.'}) : F.num('wastePct','Production spoilage %',{ph:WS.pct})+F.num('setupWaste','Setup test sheets per setup',{ph:WS.setup})+F.num('extraWaste','Additional spoiled sheets')}</div><p class="hint">Cutting offcuts and usable spare sheets are separate. Fixed allowance replaces percentage, minimum and setup-sheet allowances; it is shared across printed stocks with no stock-specific overrides.</p></details>` : `<details class="adv" data-panel="main-waste"><summary>Main material waste <span>Defaults: ${WS.pct}%</span></summary><div class="grid" style="margin-top:12px">
       ${F.num('wastePct', 'Waste %', { ph: WS.pct })}
       ${F.num('setupWaste', `Setup waste (${kind === 'sheet' ? 'sheets' : 'm'} per run)`, { ph: WS.setup })}
       ${F.num('extraWaste', `Additional waste (${kind === 'sheet' ? 'sheets' : 'm'})`)}
@@ -1785,8 +1818,8 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     } else rows=[['Roll width',`${U.f(L.rollWidth/10,3)} cm`],['Usable width',`${U.f(L.usableW/10,3)} cm`],['Pieces across',`<b>${L.across}</b>`],['Rows',`${L.rows} · last row ${L.lastRow} pieces`],['Roll length needed',`${U.f(L.lengthM*100,3)} cm`]];
     const cutting=group(exact ? '1 · Cut the stock before printing' : '1 · Layout & cutting',`<div class="need-layout"><figure>${L.kind==='sheet' ? sheetSVG(diagram) : rollSVG(diagram)}<figcaption>${exact ? 'Parent-sheet cutting plan · main stock' : 'Printing layout · main stock'}</figcaption></figure>${kv(rows)}</div>${exact ? '<p class="hint">Uniform cutting grid, no bleed. Keep artwork inside the press’s non-printable edges.</p>' : ''}`);
     const materials=r.materialRequirements || [];
-    const materialRows=materials.map(x=>`<article class="need-stock"><h5>${x.index===-1 ? 'Original / main stock' : x.role==='ncr' ? `NCR copy ${x.index+1}` : esc(x.role)} <span>${esc(x.name)}</span></h5><div class="need-counts"><span><b>${U.f(x.good,3)}</b>Good</span><span><b>${U.f(x.waste,3)}</b>Waste</span><span><b>${U.f(x.total,3)}</b>Total ${esc(x.unit)}</span></div>${x.pressSheet && x.pressSheet.exact ? `<p class="hint">${size(x.pressSheet.parentW,x.pressSheet.parentH)} parent → ${x.pressSheet.divisor} finished sheets · ${U.f(x.total/x.pressSheet.divisor,3)} parent-sheet equivalents</p>` : ''}</article>`).join('');
-    const material=group('2 · Materials & waste',materialRows + '<p class="hint">Waste is extra material for setup and production. Parent-sheet equivalents show prorated consumption.</p>' + materialRequirementsHTML(r));
+    const materialRows=materials.map(x=>`<article class="need-stock"><h5>${x.index===-1 ? 'Original / main stock' : x.role==='ncr' ? `NCR copy ${x.index+1}` : esc(x.role)} <span>${esc(x.name)}</span></h5><div class="need-counts"><span><b>${U.f(x.good,3)}</b>Good</span><span><b>${U.f(x.waste,3)}</b>Printing allowance</span><span><b>${U.f(x.total,3)}</b>${x.pressSheet && x.pressSheet.exact ? 'Required cut sheets' : 'Total '+esc(x.unit)}</span></div>${x.wasteBreakdown && x.waste>0 ? `<p class="hint">${x.wasteBreakdown.fixedAllowance ? 'Combined setup and printing allowance: '+U.f(x.waste)+' sheets.' : `Printing allowance: ${U.f(x.wasteBreakdown.production)} production${x.wasteBreakdown.minimumApplied ? ' (minimum allowance)' : ''} + ${U.f(x.wasteBreakdown.setup)} setup + ${U.f(x.wasteBreakdown.additional)} additional.`}</p>` : ''}${parentPurchaseHTML(x)}</article>`).join('');
+    const material=group('2 · Materials & waste',materialRows + '<p class="hint">Required cut sheets include good sheets and planned waste. Paper cost rounds up to whole parent sheets; spare cut sheets are not charged for printing.</p>' + materialRequirementsHTML(r));
     const printRows=materials.filter(x=>x.index===-1 || x.role==='ncr' || (s.books && x.role==='cover')).map(x=>{
       const p=x.index===-1 ? s.printing : x.printing, hours=x.index===-1 ? s.machineHours : x.machineHours;
       const label=x.index===-1 ? (s.books ? 'Inside pages' : 'Original / main stock') : x.role==='cover' ? 'Separate cover' : `NCR copy ${x.index+1}`;
@@ -1802,9 +1835,16 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
     const finish=group('4 · Finishing & labour',r.stages.length ? kv(r.stages.map(x=>[esc(x.name),`${U.f(x.qtyEff,3)} ${esc(({per_piece:'pieces',per_sheet:'sheets',per_sqm:'m²',per_meter:'m',per_hour:'hours',fixed:'job'})[x.method] || x.unit)}`])) + kv([['Labour',`${U.f(s.labor.hours*60,1)} min`]]) : `<p class="hint">No finishing operations selected.</p>${kv([['Labour',`${U.f(s.labor.hours*60,1)} min`]])}`);
     return `<div class="job-needs">${cutting}${material}${printing}${finish}</div>`;
   }
+  function parentPurchaseHTML(x) {
+    if(!x.pressSheet || !x.pressSheet.exact) return '';
+    const cut=x.pressSheet, p=x.parentPurchase;
+    const parentSize=`${U.f(cut.parentW/10,3)} × ${U.f(cut.parentH/10,3)} cm`;
+    if(!p) return `<p class="hint">${parentSize} parent → ${cut.divisor} cut sheets. Older prorated result · recalculate to use whole parent sheets.</p>`;
+    return `<dl class="need-kv"><dt>Parent sheet / yield</dt><dd>${parentSize} · ${p.sheetsPerParent} cut sheets</dd><dt>Whole parent sheets needed</dt><dd><b>${U.f(p.sheets)}</b> · ${U.f(p.cutSheets)} cut sheets available</dd><dt>Spare cut sheets</dt><dd><b>${U.f(p.spare)}</b> · not included in printing</dd><dt>Material cost</dt><dd>${money(x.cost)}</dd></dl>`;
+  }
   function materialRequirementsHTML(r) {
     if (!r.materialRequirements || r.materialRequirements.length < 2) return '';
-    return `<details class="need-costs"><summary>All material requirements · cost details</summary><div class="tscroll"><table class="tbl"><thead><tr><th>Purpose / stock</th><th>Good</th><th>Waste</th><th>Total</th><th>Unit</th><th>Rate used / unit</th><th>Material cost</th></tr></thead><tbody>${r.materialRequirements.map(x => `<tr><td>${esc(x.role)} · ${esc(x.name)}${x.pressSheet && x.pressSheet.exact ? `<br><small>${x.pressSheet.divisor} finished sheets per parent · ${U.f(x.total / x.pressSheet.divisor,3)} parent-sheet equivalents</small>` : ''}</td><td>${U.f(x.good,3)}</td><td>${U.f(x.waste,3)}</td><td>${U.f(x.total,3)}</td><td>${esc(x.unit)}</td><td>${esc(cur())} ${Number(x.unitCost).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})}</td><td>${money(x.cost)}</td></tr>`).join('')}</tbody></table></div></details>`;
+    return `<details class="need-costs"><summary>All material requirements · cost details</summary><div class="tscroll"><table class="tbl"><thead><tr><th>Purpose / stock</th><th>Good</th><th>Waste</th><th>Total</th><th>Unit</th><th>Base rate / unit</th><th>Material cost</th></tr></thead><tbody>${r.materialRequirements.map(x => `<tr><td>${esc(x.role)} · ${esc(x.name)}${x.parentPurchase ? `<br><small>${x.parentPurchase.sheets} whole parents · ${x.parentPurchase.spare} spare cut sheets</small>` : ''}</td><td>${U.f(x.good,3)}</td><td>${U.f(x.waste,3)}</td><td>${U.f(x.total,3)}</td><td>${esc(x.unit)}</td><td>${esc(cur())} ${Number(x.unitCost).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})}</td><td>${money(x.cost)}</td></tr>`).join('')}</tbody></table></div></details>`;
   }
 
   function resultsHTML(r) {
@@ -1878,7 +1918,7 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
       orientation: L.orientation, pieces_across: L.across, pieces_down: L.kind === 'sheet' ? L.down : null,
       pieces_per_sheet: L.kind === 'sheet' ? L.ups : null, rows_along_roll: L.kind === 'roll' ? L.rows : null,
       good_units: q.good, waste_units: q.waste, total_units: q.total, unit_cost: q.perUnit,
-      line_cost: r.lines.material[0].amount + (wasteLine ? wasteLine.amount : 0)
+      line_cost: r.materialRequirements && r.materialRequirements[0] ? r.materialRequirements[0].cost : r.lines.material[0].amount + (wasteLine ? wasteLine.amount : 0)
     }];
     (r.materialRequirements || []).filter(x => x.index >= 0).forEach(x => {
       const L = x.layout;
@@ -2509,12 +2549,12 @@ details[data-panel] summary span{font-size:12px;font-weight:400;color:var(--mute
           if(k==='coverMode' && isBook()) {if(v==='separate' && !state.job.addMaterials.some(r=>r.role==='cover')) state.job.addMaterials.push({role:'cover',materialId:'',qty:'',printed:true,sides:'',colors:'',colorMode:'',wastePct:'',setupWaste:'',finId:'',opQty:''});if(v==='same') state.job.addMaterials=state.job.addMaterials.filter(r=>r.role!=='cover');}
         }
         if (k === 'product') {
-          if (previousProduct!==v) {state.job.machineId='';state.job.format='single';state.job.pages='';state.job.bookAssembly='folded';state.job.coverMode='same';state.job.bindingFinId='';state.job.bindingQty='';if(previousProduct!=='NCR') state.job.addMaterials=state.job.addMaterials.filter(r=>r.role!=='cover');}
+          if (previousProduct!==v) {state.job.setupCount='';state.job.machineId='';state.job.format='single';state.job.pages='';state.job.bookAssembly='folded';state.job.coverMode='same';state.job.bindingFinId='';state.job.bindingQty='';if(previousProduct!=='NCR') state.job.addMaterials=state.job.addMaterials.filter(r=>r.role!=='cover');}
           if (previousProduct==='NCR' && v!=='NCR') {
             const defaults=E.newJob();
             state.job.addMaterials=state.job.addMaterials.filter(r=>!['ncr','cover'].includes(r.role));
             ['ncrCutMode','ncrFormat','ncrRequestedCopies','ncrCopyArchive','ncrDefaultMaterialId','ncrQuantityMode','ncrBooks'].forEach(k=>delete state.job[k]);
-            ['setsPerPad','pressW','pressH','plates','plateCost','inkRate','setupHours','speed','wastePct','setupWaste','extraWaste','parentDivisor','colors','colorMode','bleed','sides','margin','gripper','gutter'].forEach(k=>state.job[k]=defaults[k]);
+            ['setsPerPad','pressW','pressH','plates','plateCost','inkRate','setupCount','setupHours','speed','spoilageMode','spoilageSheets','wastePct','setupWaste','extraWaste','parentDivisor','colors','colorMode','bleed','sides','margin','gripper','gutter'].forEach(k=>state.job[k]=defaults[k]);
             state.job.machineId=''; state.job.materialId=''; state.job.mode='digital';
             state.job.sides=['Brochure','Flyer','Menu'].includes(v) ? 2 : 1;
           }
